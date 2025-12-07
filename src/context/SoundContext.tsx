@@ -16,6 +16,7 @@ export type SoundName =
   | 'buttonClick'
   | 'timerWarning'
   | 'timerComplete'
+  | 'timerDone'
   | 'timerTick'
   | 'heroSelect'
   | 'heroBan'
@@ -53,6 +54,7 @@ const SOUND_FILES: Record<SoundName, string> = {
   buttonClick: `${BASE_URL}sounds/ui/button-click.mp3`,
   timerWarning: `${BASE_URL}sounds/timer/timer-warning.mp3`,
   timerComplete: `${BASE_URL}sounds/timer/timer-complete.mp3`,
+  timerDone: `${BASE_URL}sounds/timer/timer-done.mp3`,
   timerTick: `${BASE_URL}sounds/timer/timer-tick.mp3`,
   heroSelect: `${BASE_URL}sounds/game/hero-select.mp3`,
   heroBan: `${BASE_URL}sounds/game/hero-ban.mp3`,

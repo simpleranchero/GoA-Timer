@@ -3,10 +3,11 @@ import { Player, Team, GameLength } from '../types';
 import { getAllExpansions } from '../data/heroes';
 import TimerInput from './TimerInput';
 import PlayerNameInput from './PlayerNameInput';
-import { Clock, Infinity, BarChart } from 'lucide-react';
+import { Clock, Infinity, BarChart, ChevronDown, ChevronUp } from 'lucide-react';
 import EnhancedTooltip from './common/EnhancedTooltip';
 import { useSound } from '../context/SoundContext';
 import dbService from '../services/DatabaseService';
+import SimpleTimerService from '../services/SimpleTimerService';
 
 interface GameSetupProps {
   strategyTime: number;
@@ -37,6 +38,15 @@ interface GameSetupProps {
   onUseDoubleLaneFor6PlayersChange: (useDouble: boolean) => void;
   // NEW: View matches button handler
   onViewMatches: () => void;
+  // Start a simple timer game using the configured timers
+  onStartSimpleTimer: () => void;
+  // Simple timer sound toggles
+  simpleSoundTickEnabled: boolean;
+  simpleSoundWarningEnabled: boolean;
+  simpleSoundCompleteEnabled: boolean;
+  onSimpleSoundTickEnabledChange: (enabled: boolean) => void;
+  onSimpleSoundWarningEnabledChange: (enabled: boolean) => void;
+  onSimpleSoundCompleteEnabledChange: (enabled: boolean) => void;
 }
 
 const GameSetup: React.FC<GameSetupProps> = ({
@@ -68,8 +78,23 @@ const GameSetup: React.FC<GameSetupProps> = ({
   onUseDoubleLaneFor6PlayersChange,
   // Match statistics props
   onViewMatches
+  ,
+  // Start simple timer handler
+  onStartSimpleTimer,
+  // Simple timer sound toggles
+  simpleSoundTickEnabled,
+  simpleSoundWarningEnabled,
+  simpleSoundCompleteEnabled,
+  onSimpleSoundTickEnabledChange,
+  onSimpleSoundWarningEnabledChange,
+  onSimpleSoundCompleteEnabledChange
 }) => {
   const { playSound } = useSound();
+  // Default: Simple Timer open, Tracked Game collapsed
+  const [collapsed, setCollapsed] = useState<boolean>(true);
+  const [simpleCollapsed, setSimpleCollapsed] = useState<boolean>(false);
+  const [levelUpTime, setLevelUpTime] = useState<number>(120);
+  const [levelUpTimerEnabled, setLevelUpTimerEnabled] = useState<boolean>(true);
   // State for suggested player names
   const [suggestedPlayerNames, setSuggestedPlayerNames] = useState<string[]>([]);
 
@@ -86,11 +111,32 @@ const GameSetup: React.FC<GameSetupProps> = ({
   
   // Set default values when component mounts if they're not already set
   useEffect(() => {
-    if (strategyTime !== 90) {
-      onStrategyTimeChange(90);
-    }
-    if (moveTime !== 30) {
-      onMoveTimeChange(30);
+    // Try to load persisted Simple Timer state first
+    const stored = SimpleTimerService.load();
+    if (stored) {
+      onStrategyTimeChange(stored.strategyTime);
+      onMoveTimeChange(stored.moveTime);
+      onStrategyTimerEnabledChange(stored.strategyTimerEnabled);
+      onMoveTimerEnabledChange(stored.moveTimerEnabled);
+      // Load level up timer if present
+      if (typeof stored.levelUpTime === 'number') setLevelUpTime(stored.levelUpTime);
+      if (typeof stored.levelUpTimerEnabled === 'boolean') setLevelUpTimerEnabled(stored.levelUpTimerEnabled);
+      if (typeof stored.soundTickEnabled === 'boolean') onSimpleSoundTickEnabledChange(stored.soundTickEnabled);
+      if (typeof stored.soundWarningEnabled === 'boolean') onSimpleSoundWarningEnabledChange(stored.soundWarningEnabled);
+      if (typeof stored.soundCompleteEnabled === 'boolean') onSimpleSoundCompleteEnabledChange(stored.soundCompleteEnabled);
+    } else {
+      if (strategyTime !== 120) {
+        onStrategyTimeChange(120);
+      }
+      if (moveTime !== 90) {
+        onMoveTimeChange(90);
+      }
+      // Default Level Up timer to 2:00 and enabled
+      setLevelUpTime(120);
+      setLevelUpTimerEnabled(true);
+      onSimpleSoundTickEnabledChange(false);
+      onSimpleSoundWarningEnabledChange(true);
+      onSimpleSoundCompleteEnabledChange(true);
     }
     
     // Check if we have match data to enable View Matches button
@@ -119,6 +165,21 @@ const GameSetup: React.FC<GameSetupProps> = ({
     
     loadPlayerNames();
   }, []);
+
+  // Persist simple timer settings whenever they change
+  useEffect(() => {
+    SimpleTimerService.save({
+      strategyTime,
+      moveTime,
+      strategyTimerEnabled,
+      moveTimerEnabled,
+      levelUpTime,
+      levelUpTimerEnabled,
+      soundTickEnabled: simpleSoundTickEnabled,
+      soundWarningEnabled: simpleSoundWarningEnabled,
+      soundCompleteEnabled: simpleSoundCompleteEnabled
+    });
+  }, [strategyTime, moveTime, strategyTimerEnabled, moveTimerEnabled, levelUpTime, levelUpTimerEnabled, simpleSoundTickEnabled, simpleSoundWarningEnabled, simpleSoundCompleteEnabled]);
 
   // Calculate player count by team
   const titanCount = players.filter(p => p.team === Team.Titans).length;
@@ -172,10 +233,31 @@ const GameSetup: React.FC<GameSetupProps> = ({
 
   const handleTimerToggle = (isStrategy: boolean) => {
     playSound('toggleSwitch');
+    // Allow independent toggling of Strategy and Player timers in setup.
     if (isStrategy) {
-      onStrategyTimerEnabledChange(!strategyTimerEnabled);
+      const next = !strategyTimerEnabled;
+      onStrategyTimerEnabledChange(next);
     } else {
-      onMoveTimerEnabledChange(!moveTimerEnabled);
+      const next = !moveTimerEnabled;
+      onMoveTimerEnabledChange(next);
+    }
+  };
+
+  const handleLevelUpToggle = () => {
+    playSound('toggleSwitch');
+    const next = !levelUpTimerEnabled;
+    // Toggle level-up independently in setup (do not force others off here).
+    setLevelUpTimerEnabled(next);
+  };
+
+  const handleSoundToggle = (type: 'tick' | 'warning' | 'complete') => {
+    playSound('toggleSwitch');
+    if (type === 'tick') {
+      onSimpleSoundTickEnabledChange(!simpleSoundTickEnabled);
+    } else if (type === 'warning') {
+      onSimpleSoundWarningEnabledChange(!simpleSoundWarningEnabled);
+    } else {
+      onSimpleSoundCompleteEnabledChange(!simpleSoundCompleteEnabled);
     }
   };
 
@@ -216,9 +298,224 @@ const GameSetup: React.FC<GameSetupProps> = ({
   };
 
   return (
+    <>
+    {/* Simple Timer card - minimal timer-only collapsible UI */}
+    <div className="bg-gray-800 rounded-lg p-4 sm:p-6 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold">Simple Timer</h2>
+        <button
+          aria-expanded={!simpleCollapsed}
+          onClick={() => {
+            playSound('buttonClick');
+            setSimpleCollapsed(prev => {
+              const next = !prev;
+              // If opening Simple Timer, ensure Tracked Game is closed
+              if (!next) setCollapsed(true);
+              return next;
+            });
+          }}
+          className="ml-3 p-2 rounded bg-gray-700 hover:bg-gray-600"
+        >
+          {simpleCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+        </button>
+      </div>
+
+      <div className={`transition-all duration-300 ${simpleCollapsed ? 'max-h-0 overflow-hidden' : 'max-h-[800px]'}`}>
+        <div className="grid grid-cols-1 gap-4 sm:gap-6 mb-0">
+          {/* Level Up Timer - separate div (moved above Strategy) */}
+          <div className="bg-gray-700 p-4 rounded-md">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-xl mb-0 flex-1 pr-4 min-w-0 truncate order-1">Level Up Phase</h3>
+              <div className="flex items-center ml-4 flex-shrink-0 order-2">
+                <EnhancedTooltip
+                  text={levelUpTimerEnabled ? "Disable level-up timer" : "Enable level-up timer"}
+                  position="top"
+                >
+                  <div
+                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-colors ${
+                      levelUpTimerEnabled ? 'bg-green-600 justify-end' : 'bg-gray-600 justify-start'
+                    }`}
+                    onClick={() => handleLevelUpToggle()}
+                  >
+                    <div className="bg-white w-4 h-4 rounded-full"></div>
+                  </div>
+                </EnhancedTooltip>
+                <div className="ml-2">
+                  {levelUpTimerEnabled ? <Clock size={16} /> : <Infinity size={16} />}
+                </div>
+              </div>
+            </div>
+
+            <div className={levelUpTimerEnabled ? '' : 'opacity-50'}>
+              <TimerInput
+                value={levelUpTime}
+                onChange={(t) => setLevelUpTime(t)}
+                tooltip="This is the time players have to spend gold and level up between rounds"
+                minValue={10}
+                maxValue={300}
+                step={10}
+                disabled={!levelUpTimerEnabled}
+              />
+            </div>
+          </div>
+
+          {/* Strategy Timer - separate div (moved below Level Up) */}
+          <div className="bg-gray-700 p-4 rounded-md">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-xl mb-0 flex-1 pr-4 min-w-0 truncate order-1">Strategy Phase</h3>
+              <div className="flex items-center ml-4 flex-shrink-0 order-2">
+                <EnhancedTooltip
+                  text={strategyTimerEnabled ? "Disable timer (unlimited time)" : "Enable timer (timed phase)"}
+                  position="top"
+                >
+                  <div
+                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-colors ${
+                      strategyTimerEnabled ? 'bg-green-600 justify-end' : 'bg-gray-600 justify-start'
+                    }`}
+                    onClick={() => handleTimerToggle(true)}
+                  >
+                    <div className="bg-white w-4 h-4 rounded-full"></div>
+                  </div>
+                </EnhancedTooltip>
+                <div className="ml-2">
+                  {strategyTimerEnabled ? <Clock size={16} /> : <Infinity size={16} />}
+                </div>
+              </div>
+            </div>
+
+            <div className={strategyTimerEnabled ? '' : 'opacity-50'}>
+              <TimerInput
+                value={strategyTime}
+                onChange={onStrategyTimeChange}
+                tooltip="This is the amount of time teams will have to publicly discuss what cards to play"
+                minValue={30}
+                maxValue={300}
+                step={10}
+                disabled={!strategyTimerEnabled}
+              />
+            </div>
+          </div>
+
+          {/* Player Phase - separate div */}
+          <div className="bg-gray-700 p-4 rounded-md">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-xl mb-0 flex-1 pr-4 min-w-0 truncate order-1">Player Phase</h3>
+              <div className="flex items-center ml-4 flex-shrink-0 order-2">
+                <EnhancedTooltip
+                  text={moveTimerEnabled ? "Disable timer (unlimited time)" : "Enable timer (timed phase)"}
+                  position="top"
+                >
+                  <div
+                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-colors ${
+                      moveTimerEnabled ? 'bg-green-600 justify-end' : 'bg-gray-600 justify-start'
+                    }`}
+                    onClick={() => handleTimerToggle(false)}
+                  >
+                    <div className="bg-white w-4 h-4 rounded-full"></div>
+                  </div>
+                </EnhancedTooltip>
+                <div className="ml-2">
+                  {moveTimerEnabled ? <Clock size={16} /> : <Infinity size={16} />}
+                </div>
+              </div>
+            </div>
+
+            <div className={moveTimerEnabled ? '' : 'opacity-50'}>
+              <TimerInput
+                value={moveTime}
+                onChange={onMoveTimeChange}
+                tooltip="This is the time each player will have to resolve their cards once revealed"
+                minValue={10}
+                maxValue={300}
+                step={10}
+                disabled={!moveTimerEnabled}
+              />
+            </div>
+          </div>
+
+          {/* Sound toggles for Simple Timer */}
+          <div className="bg-gray-700 p-4 rounded-md">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xl mb-0">Sound Options</h3>
+            </div>
+
+            <div className="space-y-3">
+              {[
+                {
+                  label: 'Tick sound',
+                  enabled: simpleSoundTickEnabled,
+                  onToggle: () => handleSoundToggle('tick'),
+                  helper: 'Per-second ticking while the timer runs'
+                },
+                {
+                  label: 'Warning sound',
+                  enabled: simpleSoundWarningEnabled,
+                  onToggle: () => handleSoundToggle('warning'),
+                  helper: 'Plays at 10 seconds remaining'
+                },
+                {
+                  label: 'Complete sound',
+                  enabled: simpleSoundCompleteEnabled,
+                  onToggle: () => handleSoundToggle('complete'),
+                  helper: 'Repeats when the timer reaches zero'
+                }
+              ].map(({ label, enabled, onToggle, helper }) => (
+                <div key={label} className="flex items-center justify-between gap-3">
+                  <div className="flex-1">
+                    <p className="font-medium">{label}</p>
+                    <p className="text-sm text-gray-300">{helper}</p>
+                  </div>
+                  <div
+                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-colors ${
+                      enabled ? 'bg-green-600 justify-end' : 'bg-gray-600 justify-start'
+                    }`}
+                    onClick={onToggle}
+                  >
+                    <div className="bg-white w-4 h-4 rounded-full"></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Game Start button for Simple Timer */}
+          <div className="mt-2 flex justify-end">
+            <button
+              className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium"
+              onClick={() => {
+                playSound('buttonClick');
+                onStartSimpleTimer();
+              }}
+            >
+              Game Start
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {/* Tracked Game card (existing) */}
     <div className="bg-gray-800 rounded-lg p-4 sm:p-6 mb-8">
-      <h2 className="text-2xl font-bold mb-4">Game Setup</h2>
-      
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold">Tracked Game</h2>
+        <button
+          aria-expanded={!collapsed}
+          onClick={() => {
+            playSound('buttonClick');
+            setCollapsed(prev => {
+              const next = !prev;
+              // If opening Tracked Game, ensure Simple Timer is closed
+              if (!next) setSimpleCollapsed(true);
+              return next;
+            });
+          }}
+          className="ml-3 p-2 rounded bg-gray-700 hover:bg-gray-600"
+        >
+          {collapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+        </button>
+      </div>
+
+      <div className={`transition-all duration-300 ${collapsed ? 'max-h-0 overflow-hidden' : 'max-h-[2000px]'}`}>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 mb-6">
         {/* Timer Settings Column */}
         <div>
@@ -295,7 +592,7 @@ const GameSetup: React.FC<GameSetupProps> = ({
                     onChange={onMoveTimeChange}
                     tooltip="This is the time each player will have to resolve their cards once revealed"
                     minValue={10}
-                    maxValue={120}
+                    maxValue={300}
                     step={10}
                     disabled={!moveTimerEnabled}
                   />
@@ -668,6 +965,8 @@ const GameSetup: React.FC<GameSetupProps> = ({
         Disclaimer: This is not a professional product and it is always recommended you back up your data (View Matches&gt;Export Data). This is not an official product and has not been approved by Wolff Designa. All game content is the sole property of Wolff Designa. 
       </p>
     </div>
+    </div>
+    </>
   );
 };
 

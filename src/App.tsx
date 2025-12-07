@@ -2,6 +2,7 @@ import { useState, useEffect, useReducer, useRef } from 'react';
 import './App.css';
 import GameSetup from './components/GameSetup';
 import GameTimer from './components/GameTimer';
+import SimpleGameTimer from './components/SimpleGameTimer';
 import DraftingSystem from './components/DraftingSystem';
 import CoinToss from './components/CoinToss';
 import DraftModeSelection from './components/DraftModeSelection';
@@ -12,6 +13,7 @@ import VictoryScreen from './components/VictoryScreen';
 import ResumeGamePrompt from './components/common/ResumeGamePrompt';
 import { gameStorageService } from './services/GameStorageService';
 import migrationService from './services/MigrationService';
+import SimpleTimerService from './services/SimpleTimerService';
 import { SoundProvider, useSound } from './context/SoundContext';
 import { ConnectionProvider } from './context/ConnectionContext'; // Import ConnectionProvider
 import { PlayerRoundStats } from './components/EndOfRoundAssistant';
@@ -405,8 +407,9 @@ function AppContent() {
 
   // Game setup state
   const [gameStarted, setGameStarted] = useState<boolean>(false);
-  const [strategyTime, setStrategyTime] = useState<number>(90); // 90 seconds default
-  const [moveTime, setMoveTime] = useState<number>(30); // 30 seconds default
+  const [simpleTimerMode, setSimpleTimerMode] = useState<boolean>(false);
+  const [strategyTime, setStrategyTime] = useState<number>(120); // 2:00 default
+  const [moveTime, setMoveTime] = useState<number>(90); // 1:30 default
   const [strategyTimerEnabled, setStrategyTimerEnabled] = useState<boolean>(true);
   const [moveTimerEnabled, setMoveTimerEnabled] = useState<boolean>(true);
   const [gameLength, setGameLength] = useState<GameLength>(GameLength.Quick);
@@ -480,6 +483,15 @@ function AppContent() {
   const [moveTimerActive, setMoveTimerActive] = useState<boolean>(false);
   const [strategyTimeRemaining, setStrategyTimeRemaining] = useState<number>(strategyTime);
   const [moveTimeRemaining, setMoveTimeRemaining] = useState<number>(moveTime);
+  // Level Up timer states for Simple Timer mode
+  const [levelUpTime, setLevelUpTime] = useState<number>(120);
+  const [levelUpTimerEnabled, setLevelUpTimerEnabled] = useState<boolean>(true);
+  const [levelUpTimerActive, setLevelUpTimerActive] = useState<boolean>(false);
+  const [levelUpTimeRemaining, setLevelUpTimeRemaining] = useState<number>(levelUpTime);
+  // Simple Timer sound toggles
+  const [simpleSoundTickEnabled, setSimpleSoundTickEnabled] = useState<boolean>(false);
+  const [simpleSoundWarningEnabled, setSimpleSoundWarningEnabled] = useState<boolean>(true);
+  const [simpleSoundCompleteEnabled, setSimpleSoundCompleteEnabled] = useState<boolean>(true);
 
   // NEW: Save game state periodically or when important state changes
   useEffect(() => {
@@ -836,6 +848,46 @@ const addPlayer = (team: Team) => {
     // Show coin animation - the CoinToss component will handle showing
     // the draft mode selection when the user clicks "Continue"
     setShowCoinAnimation(true);
+  };
+
+  // Start a simple timer game using persisted simple-timer settings (or current values)
+  const handleStartSimpleTimer = () => {
+    // Start the simple-timer screen (not the tracked game)
+    playSound('buttonClick');
+
+    const stored = SimpleTimerService.load();
+    const sTime = stored?.strategyTime ?? strategyTime;
+    const mTime = stored?.moveTime ?? moveTime;
+    const sEnabled = typeof stored?.strategyTimerEnabled === 'boolean' ? stored!.strategyTimerEnabled : strategyTimerEnabled;
+    const mEnabled = typeof stored?.moveTimerEnabled === 'boolean' ? stored!.moveTimerEnabled : moveTimerEnabled;
+    const soundTick = typeof stored?.soundTickEnabled === 'boolean' ? stored!.soundTickEnabled : false;
+    const soundWarning = typeof stored?.soundWarningEnabled === 'boolean' ? stored!.soundWarningEnabled : true;
+    const soundComplete = typeof stored?.soundCompleteEnabled === 'boolean' ? stored!.soundCompleteEnabled : true;
+
+    // Apply selected timer settings to app-level state
+    setStrategyTime(sTime);
+    setMoveTime(mTime);
+    setStrategyTimerEnabled(sEnabled);
+    setMoveTimerEnabled(mEnabled);
+    setSimpleSoundTickEnabled(soundTick);
+    setSimpleSoundWarningEnabled(soundWarning);
+    setSimpleSoundCompleteEnabled(soundComplete);
+
+    // Load level-up values as well
+    const luTime = typeof stored?.levelUpTime === 'number' ? stored!.levelUpTime : 120; // default 2:00
+    const luEnabled = typeof stored?.levelUpTimerEnabled === 'boolean' ? stored!.levelUpTimerEnabled : true;
+    setLevelUpTime(luTime);
+    setLevelUpTimerEnabled(luEnabled);
+    setLevelUpTimeRemaining(luTime);
+    setLevelUpTimerActive(false);
+
+    // Set timer remaining and activate strategy timer for the simple mode
+    setStrategyTimeRemaining(sTime);
+    setMoveTimeRemaining(mTime);
+    setStrategyTimerActive(false);
+
+    // Enter simple timer mode (a separate screen)
+    setSimpleTimerMode(true);
   };
 
   // Handle draft mode selection
@@ -1429,6 +1481,42 @@ const startGameWithPlayers = (playersToUse: Player[]) => {
     setMoveTimeRemaining(moveTime);
   };
 
+  // Player timer controls (mapped to move timer state)
+  const startPlayerTimer = () => {
+    playSound('buttonClick');
+    if (moveTimeRemaining <= 0) setMoveTimeRemaining(moveTime);
+    setMoveTimerActive(true);
+  };
+
+  const pausePlayerTimer = () => {
+    playSound('buttonClick');
+    setMoveTimerActive(false);
+  };
+
+  const resetPlayerTimer = () => {
+    playSound('buttonClick');
+    setMoveTimerActive(false);
+    setMoveTimeRemaining(moveTime);
+  };
+
+  // Level Up timer controls for Simple Timer mode
+  const startLevelUpTimer = () => {
+    playSound('buttonClick');
+    if (levelUpTimeRemaining <= 0) setLevelUpTimeRemaining(levelUpTime || 150);
+    setLevelUpTimerActive(true);
+  };
+
+  const pauseLevelUpTimer = () => {
+    playSound('buttonClick');
+    setLevelUpTimerActive(false);
+  };
+
+  const resetLevelUpTimer = () => {
+    playSound('buttonClick');
+    setLevelUpTimerActive(false);
+    setLevelUpTimeRemaining(levelUpTime || 150);
+  };
+
   // Adjust team life counter
   const adjustTeamLife = (team: Team, delta: number) => {
     playSound('lifeChange');
@@ -1607,18 +1695,18 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
     if (strategyTimerActive && strategyTimeRemaining > 0) {
       timer = setTimeout(() => {
         // Play warning sound at 10 seconds remaining
-        if (strategyTimeRemaining === 11) {
+        if (!simpleTimerMode && strategyTimeRemaining === 11) {
           playSound('timerWarning');
         }
         
         // Play tick sound every second if not muted
-        if (isAudioReady) {
+        if (isAudioReady && (!simpleTimerMode || simpleSoundTickEnabled)) {
           playSound('timerTick');
         }
         
         setStrategyTimeRemaining(strategyTimeRemaining - 1);
       }, 1000);
-    } else if (strategyTimerActive && strategyTimeRemaining === 0) {
+    } else if (strategyTimerActive && strategyTimeRemaining === 0 && !simpleTimerMode) {
       playSound('timerComplete');
       
       setStrategyTimerActive(false);
@@ -1626,7 +1714,30 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
     }
     
     return () => clearTimeout(timer);
-  }, [strategyTimerActive, strategyTimeRemaining, playSound, isAudioReady]);
+  }, [strategyTimerActive, strategyTimeRemaining, playSound, isAudioReady, simpleTimerMode, simpleSoundTickEnabled]);
+
+  // Handle level-up timer (for Simple Timer mode)
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+
+    if (levelUpTimerActive && levelUpTimeRemaining > 0) {
+      timer = setTimeout(() => {
+        if (!simpleTimerMode && levelUpTimeRemaining === 11) {
+          playSound('timerWarning');
+        }
+        if (isAudioReady && (!simpleTimerMode || simpleSoundTickEnabled)) {
+          playSound('timerTick');
+        }
+        setLevelUpTimeRemaining(levelUpTimeRemaining - 1);
+      }, 1000);
+    } else if (levelUpTimerActive && levelUpTimeRemaining === 0 && !simpleTimerMode) {
+      playSound('timerComplete');
+      setLevelUpTimerActive(false);
+      // After level-up completes, nothing automated for now
+    }
+
+    return () => clearTimeout(timer);
+  }, [levelUpTimerActive, levelUpTimeRemaining, playSound, isAudioReady, simpleTimerMode, simpleSoundTickEnabled]);
 
   // Handle move timer
   useEffect(() => {
@@ -1635,18 +1746,18 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
     if (moveTimerActive && moveTimeRemaining > 0) {
       timer = setTimeout(() => {
         // Play warning sound at 10 seconds remaining
-        if (moveTimeRemaining === 11) {
+        if (!simpleTimerMode && moveTimeRemaining === 11) {
           playSound('timerWarning');
         }
         
         // Play tick sound every second if not muted
-        if (isAudioReady) {
+        if (isAudioReady && (!simpleTimerMode || simpleSoundTickEnabled)) {
           playSound('timerTick');
         }
         
         setMoveTimeRemaining(moveTimeRemaining - 1);
       }, 1000);
-    } else if (moveTimerActive && moveTimeRemaining === 0) {
+    } else if (moveTimerActive && moveTimeRemaining === 0 && !simpleTimerMode) {
       playSound('timerComplete');
       
       setMoveTimerActive(false);
@@ -1654,7 +1765,7 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
     }
     
     return () => clearTimeout(timer);
-  }, [moveTimerActive, moveTimeRemaining, playSound, isAudioReady]);
+  }, [moveTimerActive, moveTimeRemaining, playSound, isAudioReady, simpleTimerMode, simpleSoundTickEnabled]);
 
   // Utility function to shuffle an array
   const shuffleArray = <T extends unknown>(array: T[]): T[] => {
@@ -1855,6 +1966,36 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
               onBackToDraftSelection={handleBackToDraftSelection}
               canUndo={draftHistory.length > 0}
             />
+          ) : simpleTimerMode ? (
+            <SimpleGameTimer
+              strategyTimeRemaining={strategyTimeRemaining}
+              strategyTimerActive={strategyTimerActive}
+              onStartStrategyTimer={() => setStrategyTimerActive(true)}
+              onPauseStrategyTimer={() => setStrategyTimerActive(false)}
+              onResetStrategyTimer={resetStrategyTimer}
+              onBackToSetup={() => {
+                // Exit simple timer mode and reset timers to setup defaults
+                setSimpleTimerMode(false);
+                setStrategyTimerActive(false);
+                setStrategyTimeRemaining(strategyTime);
+              }}
+              onEndPhase={endStrategyPhase}
+              strategyTimerEnabled={strategyTimerEnabled}
+              levelUpTimeRemaining={levelUpTimeRemaining}
+              levelUpTimerActive={levelUpTimerActive}
+              onStartLevelUpTimer={startLevelUpTimer}
+              onPauseLevelUpTimer={pauseLevelUpTimer}
+              onResetLevelUpTimer={resetLevelUpTimer}
+              levelUpTimerEnabled={levelUpTimerEnabled}
+              playerTimeRemaining={moveTimeRemaining}
+              playerTimerActive={moveTimerActive}
+              onStartPlayerTimer={startPlayerTimer}
+              onPausePlayerTimer={pausePlayerTimer}
+              onResetPlayerTimer={resetPlayerTimer}
+              playerTimerEnabled={moveTimerEnabled}
+              soundWarningEnabled={simpleSoundWarningEnabled}
+              soundCompleteEnabled={simpleSoundCompleteEnabled}
+            />
           ) : (
             <GameSetup 
               strategyTime={strategyTime}
@@ -1882,6 +2023,13 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
               useDoubleLaneFor6Players={useDoubleLaneFor6Players}
               onUseDoubleLaneFor6PlayersChange={setUseDoubleLaneFor6Players}
               onViewMatches={handleViewMatches}
+              onStartSimpleTimer={handleStartSimpleTimer}
+              simpleSoundTickEnabled={simpleSoundTickEnabled}
+              simpleSoundWarningEnabled={simpleSoundWarningEnabled}
+              simpleSoundCompleteEnabled={simpleSoundCompleteEnabled}
+              onSimpleSoundTickEnabledChange={setSimpleSoundTickEnabled}
+              onSimpleSoundWarningEnabledChange={setSimpleSoundWarningEnabled}
+              onSimpleSoundCompleteEnabledChange={setSimpleSoundCompleteEnabled}
             />
           )}
           
