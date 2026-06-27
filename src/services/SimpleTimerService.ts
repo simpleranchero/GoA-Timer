@@ -7,7 +7,6 @@ export interface SimpleTimerState {
   strategyTimerEnabled: boolean;
   moveTimerEnabled: boolean;
   levelUpTime?: number;
-  levelUpTimerEnabled?: boolean;
   soundTickEnabled?: boolean;
   soundWarningEnabled?: boolean;
   soundCompleteEnabled?: boolean;
@@ -32,7 +31,6 @@ const normalizeState = (raw: any): SimpleTimerState | null => {
     strategyTimerEnabled: normalizeBoolean(raw.strategyTimerEnabled, true),
     moveTimerEnabled: normalizeBoolean(raw.moveTimerEnabled, true),
     levelUpTime: normalizeNumber(raw.levelUpTime, 120),
-    levelUpTimerEnabled: normalizeBoolean(raw.levelUpTimerEnabled, true),
     soundTickEnabled: normalizeBoolean(raw.soundTickEnabled, false),
     soundWarningEnabled: normalizeBoolean(raw.soundWarningEnabled, true),
     soundCompleteEnabled: normalizeBoolean(raw.soundCompleteEnabled, true)

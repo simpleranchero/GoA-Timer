@@ -168,7 +168,7 @@ export const SoundProvider: React.FC<{children: React.ReactNode}> = ({ children 
     try {
       const sound = new Howl({
         src: [SOUND_FILES[soundName]],
-        volume: soundName === 'timerTick' ? 0.2 : 0.5,
+        volume: soundName === 'timerTick' ? 0.2 : soundName === 'timerWarning' ? 0.75 : 0.5,
         onload: () => console.log(`Successfully loaded: ${soundName}`),
         onloaderror: (error: any) => console.error(`Error loading ${soundName}:`, error),
         onplay: () => console.log(`Started playing: ${soundName}`),

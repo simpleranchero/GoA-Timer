@@ -485,7 +485,6 @@ function AppContent() {
   const [moveTimeRemaining, setMoveTimeRemaining] = useState<number>(moveTime);
   // Level Up timer states for Simple Timer mode
   const [levelUpTime, setLevelUpTime] = useState<number>(120);
-  const [levelUpTimerEnabled, setLevelUpTimerEnabled] = useState<boolean>(true);
   const [levelUpTimerActive, setLevelUpTimerActive] = useState<boolean>(false);
   const [levelUpTimeRemaining, setLevelUpTimeRemaining] = useState<number>(levelUpTime);
   // Simple Timer sound toggles
@@ -875,9 +874,7 @@ const addPlayer = (team: Team) => {
 
     // Load level-up values as well
     const luTime = typeof stored?.levelUpTime === 'number' ? stored!.levelUpTime : 120; // default 2:00
-    const luEnabled = typeof stored?.levelUpTimerEnabled === 'boolean' ? stored!.levelUpTimerEnabled : true;
     setLevelUpTime(luTime);
-    setLevelUpTimerEnabled(luEnabled);
     setLevelUpTimeRemaining(luTime);
     setLevelUpTimerActive(false);
 
@@ -1809,13 +1806,15 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
   };
 
   return (
-    <div className="App min-h-screen bg-gradient-to-b from-blue-400 to-orange-300 text-white p-6">
+    <div className={`App min-h-screen bg-gradient-to-b from-blue-400 to-orange-300 text-white ${simpleTimerMode ? '' : 'p-6'}`}>
       {/* Add AudioInitializer at the top level */}
       <AudioInitializer />
-      
-      <header className="App-header mb-8">
-        <h1 className="text-3xl font-bold mb-2">Guards of Atlantis II Timer</h1>
-      </header>
+
+      {!simpleTimerMode && (
+        <header className="App-header mb-8">
+          <h1 className="text-3xl font-bold mb-2">Guards of Atlantis II Timer</h1>
+        </header>
+      )}
 
       {/* Resume Game Prompt */}
       {showResumePrompt && savedGameData && (
@@ -1980,19 +1979,16 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
                 setStrategyTimeRemaining(strategyTime);
               }}
               onEndPhase={endStrategyPhase}
-              strategyTimerEnabled={strategyTimerEnabled}
               levelUpTimeRemaining={levelUpTimeRemaining}
               levelUpTimerActive={levelUpTimerActive}
               onStartLevelUpTimer={startLevelUpTimer}
               onPauseLevelUpTimer={pauseLevelUpTimer}
               onResetLevelUpTimer={resetLevelUpTimer}
-              levelUpTimerEnabled={levelUpTimerEnabled}
               playerTimeRemaining={moveTimeRemaining}
               playerTimerActive={moveTimerActive}
               onStartPlayerTimer={startPlayerTimer}
               onPausePlayerTimer={pausePlayerTimer}
               onResetPlayerTimer={resetPlayerTimer}
-              playerTimerEnabled={moveTimerEnabled}
               soundWarningEnabled={simpleSoundWarningEnabled}
               soundCompleteEnabled={simpleSoundCompleteEnabled}
             />

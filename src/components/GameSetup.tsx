@@ -5,6 +5,7 @@ import TimerInput from './TimerInput';
 import PlayerNameInput from './PlayerNameInput';
 import { Clock, Infinity, BarChart, ChevronDown, ChevronUp } from 'lucide-react';
 import EnhancedTooltip from './common/EnhancedTooltip';
+import TimerPhaseCard from './common/TimerPhaseCard';
 import { useSound } from '../context/SoundContext';
 import dbService from '../services/DatabaseService';
 import SimpleTimerService from '../services/SimpleTimerService';
@@ -94,7 +95,6 @@ const GameSetup: React.FC<GameSetupProps> = ({
   const [collapsed, setCollapsed] = useState<boolean>(true);
   const [simpleCollapsed, setSimpleCollapsed] = useState<boolean>(false);
   const [levelUpTime, setLevelUpTime] = useState<number>(120);
-  const [levelUpTimerEnabled, setLevelUpTimerEnabled] = useState<boolean>(true);
   // State for suggested player names
   const [suggestedPlayerNames, setSuggestedPlayerNames] = useState<string[]>([]);
 
@@ -120,7 +120,6 @@ const GameSetup: React.FC<GameSetupProps> = ({
       onMoveTimerEnabledChange(stored.moveTimerEnabled);
       // Load level up timer if present
       if (typeof stored.levelUpTime === 'number') setLevelUpTime(stored.levelUpTime);
-      if (typeof stored.levelUpTimerEnabled === 'boolean') setLevelUpTimerEnabled(stored.levelUpTimerEnabled);
       if (typeof stored.soundTickEnabled === 'boolean') onSimpleSoundTickEnabledChange(stored.soundTickEnabled);
       if (typeof stored.soundWarningEnabled === 'boolean') onSimpleSoundWarningEnabledChange(stored.soundWarningEnabled);
       if (typeof stored.soundCompleteEnabled === 'boolean') onSimpleSoundCompleteEnabledChange(stored.soundCompleteEnabled);
@@ -131,9 +130,7 @@ const GameSetup: React.FC<GameSetupProps> = ({
       if (moveTime !== 90) {
         onMoveTimeChange(90);
       }
-      // Default Level Up timer to 2:00 and enabled
       setLevelUpTime(120);
-      setLevelUpTimerEnabled(true);
       onSimpleSoundTickEnabledChange(false);
       onSimpleSoundWarningEnabledChange(true);
       onSimpleSoundCompleteEnabledChange(true);
@@ -174,12 +171,11 @@ const GameSetup: React.FC<GameSetupProps> = ({
       strategyTimerEnabled,
       moveTimerEnabled,
       levelUpTime,
-      levelUpTimerEnabled,
       soundTickEnabled: simpleSoundTickEnabled,
       soundWarningEnabled: simpleSoundWarningEnabled,
       soundCompleteEnabled: simpleSoundCompleteEnabled
     });
-  }, [strategyTime, moveTime, strategyTimerEnabled, moveTimerEnabled, levelUpTime, levelUpTimerEnabled, simpleSoundTickEnabled, simpleSoundWarningEnabled, simpleSoundCompleteEnabled]);
+  }, [strategyTime, moveTime, strategyTimerEnabled, moveTimerEnabled, levelUpTime, simpleSoundTickEnabled, simpleSoundWarningEnabled, simpleSoundCompleteEnabled]);
 
   // Calculate player count by team
   const titanCount = players.filter(p => p.team === Team.Titans).length;
@@ -241,13 +237,6 @@ const GameSetup: React.FC<GameSetupProps> = ({
       const next = !moveTimerEnabled;
       onMoveTimerEnabledChange(next);
     }
-  };
-
-  const handleLevelUpToggle = () => {
-    playSound('toggleSwitch');
-    const next = !levelUpTimerEnabled;
-    // Toggle level-up independently in setup (do not force others off here).
-    setLevelUpTimerEnabled(next);
   };
 
   const handleSoundToggle = (type: 'tick' | 'warning' | 'complete') => {
@@ -322,116 +311,50 @@ const GameSetup: React.FC<GameSetupProps> = ({
 
       <div className={`transition-all duration-300 ${simpleCollapsed ? 'max-h-0 overflow-hidden' : 'max-h-[800px]'}`}>
         <div className="grid grid-cols-1 gap-4 sm:gap-6 mb-0">
-          {/* Level Up Timer - separate div (moved above Strategy) */}
-          <div className="bg-gray-700 p-4 rounded-md">
-            <div className="flex items-start justify-between mb-3">
-              <h3 className="text-xl mb-0 flex-1 pr-4 min-w-0 truncate order-1">Level Up Phase</h3>
-              <div className="flex items-center ml-4 flex-shrink-0 order-2">
-                <EnhancedTooltip
-                  text={levelUpTimerEnabled ? "Disable level-up timer" : "Enable level-up timer"}
-                  position="top"
-                >
-                  <div
-                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-colors ${
-                      levelUpTimerEnabled ? 'bg-green-600 justify-end' : 'bg-gray-600 justify-start'
-                    }`}
-                    onClick={() => handleLevelUpToggle()}
-                  >
-                    <div className="bg-white w-4 h-4 rounded-full"></div>
-                  </div>
-                </EnhancedTooltip>
-                <div className="ml-2">
-                  {levelUpTimerEnabled ? <Clock size={16} /> : <Infinity size={16} />}
-                </div>
-              </div>
-            </div>
+          {/* Level Up Timer */}
+          <TimerPhaseCard
+            title="Level Up Phase"
+            className="bg-gray-700 p-4"
+          >
+            <TimerInput
+              value={levelUpTime}
+              onChange={(t) => setLevelUpTime(t)}
+              tooltip="This is the time players have to spend gold and level up between rounds"
+              minValue={10}
+              maxValue={300}
+              step={10}
+            />
+          </TimerPhaseCard>
 
-            <div className={levelUpTimerEnabled ? '' : 'opacity-50'}>
-              <TimerInput
-                value={levelUpTime}
-                onChange={(t) => setLevelUpTime(t)}
-                tooltip="This is the time players have to spend gold and level up between rounds"
-                minValue={10}
-                maxValue={300}
-                step={10}
-                disabled={!levelUpTimerEnabled}
-              />
-            </div>
-          </div>
+          {/* Strategy Timer */}
+          <TimerPhaseCard
+            title="Strategy Phase"
+            className="bg-gray-700 p-4"
+          >
+            <TimerInput
+              value={strategyTime}
+              onChange={onStrategyTimeChange}
+              tooltip="This is the amount of time teams will have to publicly discuss what cards to play"
+              minValue={30}
+              maxValue={300}
+              step={10}
+            />
+          </TimerPhaseCard>
 
-          {/* Strategy Timer - separate div (moved below Level Up) */}
-          <div className="bg-gray-700 p-4 rounded-md">
-            <div className="flex items-start justify-between mb-3">
-              <h3 className="text-xl mb-0 flex-1 pr-4 min-w-0 truncate order-1">Strategy Phase</h3>
-              <div className="flex items-center ml-4 flex-shrink-0 order-2">
-                <EnhancedTooltip
-                  text={strategyTimerEnabled ? "Disable timer (unlimited time)" : "Enable timer (timed phase)"}
-                  position="top"
-                >
-                  <div
-                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-colors ${
-                      strategyTimerEnabled ? 'bg-green-600 justify-end' : 'bg-gray-600 justify-start'
-                    }`}
-                    onClick={() => handleTimerToggle(true)}
-                  >
-                    <div className="bg-white w-4 h-4 rounded-full"></div>
-                  </div>
-                </EnhancedTooltip>
-                <div className="ml-2">
-                  {strategyTimerEnabled ? <Clock size={16} /> : <Infinity size={16} />}
-                </div>
-              </div>
-            </div>
-
-            <div className={strategyTimerEnabled ? '' : 'opacity-50'}>
-              <TimerInput
-                value={strategyTime}
-                onChange={onStrategyTimeChange}
-                tooltip="This is the amount of time teams will have to publicly discuss what cards to play"
-                minValue={30}
-                maxValue={300}
-                step={10}
-                disabled={!strategyTimerEnabled}
-              />
-            </div>
-          </div>
-
-          {/* Player Phase - separate div */}
-          <div className="bg-gray-700 p-4 rounded-md">
-            <div className="flex items-start justify-between mb-3">
-              <h3 className="text-xl mb-0 flex-1 pr-4 min-w-0 truncate order-1">Player Phase</h3>
-              <div className="flex items-center ml-4 flex-shrink-0 order-2">
-                <EnhancedTooltip
-                  text={moveTimerEnabled ? "Disable timer (unlimited time)" : "Enable timer (timed phase)"}
-                  position="top"
-                >
-                  <div
-                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-colors ${
-                      moveTimerEnabled ? 'bg-green-600 justify-end' : 'bg-gray-600 justify-start'
-                    }`}
-                    onClick={() => handleTimerToggle(false)}
-                  >
-                    <div className="bg-white w-4 h-4 rounded-full"></div>
-                  </div>
-                </EnhancedTooltip>
-                <div className="ml-2">
-                  {moveTimerEnabled ? <Clock size={16} /> : <Infinity size={16} />}
-                </div>
-              </div>
-            </div>
-
-            <div className={moveTimerEnabled ? '' : 'opacity-50'}>
-              <TimerInput
-                value={moveTime}
-                onChange={onMoveTimeChange}
-                tooltip="This is the time each player will have to resolve their cards once revealed"
-                minValue={10}
-                maxValue={300}
-                step={10}
-                disabled={!moveTimerEnabled}
-              />
-            </div>
-          </div>
+          {/* Player Phase */}
+          <TimerPhaseCard
+            title="Player Phase"
+            className="bg-gray-700 p-4"
+          >
+            <TimerInput
+              value={moveTime}
+              onChange={onMoveTimeChange}
+              tooltip="This is the time each player will have to resolve their cards once revealed"
+              minValue={10}
+              maxValue={300}
+              step={10}
+            />
+          </TimerPhaseCard>
 
           {/* Sound toggles for Simple Timer */}
           <div className="bg-gray-700 p-4 rounded-md">
