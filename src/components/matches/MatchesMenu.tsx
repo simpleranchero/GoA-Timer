@@ -1,13 +1,17 @@
 // src/components/matches/MatchesMenu.tsx - Updated to include Hero Info
 import React, { useState, useEffect } from 'react';
-import { ChevronLeft, Users, History, Shield, Download, Upload, Trash2, Info, AlertTriangle, Shuffle, FileText, Share2, Wifi, File, Book, UserCheck } from 'lucide-react';
+import { ChevronLeft, Users, History, Shield, Download, Upload, Trash2, Info, AlertTriangle, Shuffle, FileText, File, Book, UserCheck } from 'lucide-react';
+// LEGACY: Share2, Wifi - used by P2P feature
 import EnhancedTooltip from '../common/EnhancedTooltip';
-import { ConnectionModal } from '../common/ConnectionModal';
+// LEGACY: P2P Connection Modal - kept for potential future use
+// import { ConnectionModal } from '../common/ConnectionModal';
 import { EditPlayerDataModal } from './EditPlayerDataModal';
 import dbService from '../../services/DatabaseService';
 import { useSound } from '../../context/SoundContext';
-import { useConnection } from '../../context/ConnectionContext';
-export type MatchesView = 'menu' | 'player-stats' | 'detailed-player-stats' | 'hero-stats' | 'match-history' | 'match-maker' | 'record-match' | 'hero-info' | 'skill-over-time';
+import { useViewMode } from '../../context/ViewModeContext';
+// LEGACY: P2P Connection Context - kept for potential future use
+// import { useConnection } from '../../context/ConnectionContext';
+export type MatchesView = 'menu' | 'player-stats' | 'detailed-player-stats' | 'hero-stats' | 'detailed-hero-stats' | 'match-history' | 'match-maker' | 'record-match' | 'hero-info' | 'skill-over-time';
 interface MatchesMenuProps {
   onBack: () => void;
   onNavigate: (view: MatchesView) => void;
@@ -15,14 +19,16 @@ interface MatchesMenuProps {
 
 const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
   const { playSound } = useSound();
-  const { connectionState } = useConnection();
+  const { isViewMode, sharedData, isLoading: isViewModeLoading } = useViewMode();
+  // LEGACY: P2P Connection State
+  // const { connectionState } = useConnection();
   const [hasData, setHasData] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
   
-  // State for P2P connection modal
-  const [showConnectionModal, setShowConnectionModal] = useState<boolean>(false);
+  // LEGACY: State for P2P connection modal
+  // const [showConnectionModal, setShowConnectionModal] = useState<boolean>(false);
   
   // State for import options
   const [showImportOptions, setShowImportOptions] = useState<boolean>(false);
@@ -33,10 +39,17 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
   const [hasZeroGamePlayers, setHasZeroGamePlayers] = useState<boolean>(false);
   
   
-  // Check if we have any match data
+  // Check if we have any match data (view mode aware)
   const checkForMatchData = async () => {
-    const hasMatchData = await dbService.hasMatchData();
-    setHasData(hasMatchData);
+    if (isViewMode && sharedData) {
+      // In view mode, check if shared data has matches
+      const hasMatchData = sharedData.matches && sharedData.matches.length > 0;
+      setHasData(hasMatchData);
+    } else if (!isViewMode) {
+      // In normal mode, check IndexedDB
+      const hasMatchData = await dbService.hasMatchData();
+      setHasData(hasMatchData);
+    }
   };
 
   // Check if there are players with zero games
@@ -50,11 +63,17 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
     }
   };
   
-  // Check data on component mount
+  // Check data on component mount and when view mode changes
   useEffect(() => {
+    // Wait for view mode loading to complete before checking data
+    if (isViewModeLoading) return;
+
     checkForMatchData();
-    checkForZeroGamePlayers();
-  }, []);
+    // Only check for zero game players in non-view mode (local data)
+    if (!isViewMode) {
+      checkForZeroGamePlayers();
+    }
+  }, [isViewModeLoading, isViewMode, sharedData]);
   
   // Handle menu navigation with sound
   const handleNavigate = (view: MatchesView) => {
@@ -68,22 +87,18 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
     onBack();
   };
   
-  // Handle opening P2P connection modal
-  const handleOpenConnectionModal = () => {
-    playSound('buttonClick');
-    setShowConnectionModal(true);
-  };
-  
-  // Handle closing P2P connection modal
-  const handleCloseConnectionModal = () => {
-    setShowConnectionModal(false);
-  };
-  
-  // Handle P2P data received - refresh the hasData state
-  const handleDataReceived = () => {
-    console.log("Data received, refreshing match data status");
-    checkForMatchData();
-  };
+  // LEGACY: P2P connection modal handlers - kept for potential future use
+  // const handleOpenConnectionModal = () => {
+  //   playSound('buttonClick');
+  //   setShowConnectionModal(true);
+  // };
+  // const handleCloseConnectionModal = () => {
+  //   setShowConnectionModal(false);
+  // };
+  // const handleDataReceived = () => {
+  //   console.log("Data received, refreshing match data status");
+  //   checkForMatchData();
+  // };
 
   // Handle opening Edit Player Data modal
   const handleOpenEditPlayerModal = () => {
@@ -229,13 +244,18 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
   return (
     <div className="bg-gray-800 rounded-lg p-6">
       <div className="flex justify-between items-center mb-6">
-        <button
-          onClick={handleBack}
-          className="flex items-center text-gray-300 hover:text-white"
-        >
-          <ChevronLeft size={20} className="mr-1" />
-          <span>Back to Setup</span>
-        </button>
+        {/* Hide Back to Setup in view mode - viewers should use Exit button in banner */}
+        {!isViewMode ? (
+          <button
+            onClick={handleBack}
+            className="flex items-center text-gray-300 hover:text-white"
+          >
+            <ChevronLeft size={20} className="mr-1" />
+            <span>Back to Setup</span>
+          </button>
+        ) : (
+          <div /> /* Placeholder to maintain layout */
+        )}
         <h2 className="text-2xl font-bold">Match Statistics</h2>
       </div>
       
@@ -310,8 +330,9 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
           )}
         </div>
         
-        {/* Record Match */}
-        <div 
+        {/* Record Match - Hidden in view mode */}
+        {!isViewMode && (
+        <div
           className="bg-gray-700 hover:bg-gray-600 rounded-lg p-6 cursor-pointer transition-colors"
           onClick={() => handleNavigate('record-match')}
         >
@@ -322,11 +343,12 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
           <p className="text-gray-300">
             Manually log match results for games played outside the application.
           </p>
-          
         </div>
+        )}
         
-        {/* Match Maker */}
-        <div 
+        {/* Match Maker - Hidden in view mode */}
+        {!isViewMode && (
+        <div
           className={`bg-gray-700 hover:bg-gray-600 rounded-lg p-6 cursor-pointer transition-colors ${
             !hasData ? 'opacity-50 pointer-events-none' : ''
           }`}
@@ -339,7 +361,7 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
           <p className="text-gray-300">
             Generate balanced teams based on player rankings or experience for fair matches.
           </p>
-          
+
           {!hasData && (
             <div className="mt-3 text-yellow-400 text-sm flex items-center">
               <Info size={16} className="mr-1" />
@@ -347,6 +369,7 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
             </div>
           )}
         </div>
+        )}
         
         {/* NEW COMPONENT: Hero Info */}
         <div 
@@ -365,7 +388,8 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
         </div>
       </div>
       
-      {/* Data Management Section */}
+      {/* Data Management Section - Hidden in view mode */}
+      {!isViewMode && (
       <div className="mt-8 border-t border-gray-700 pt-6">
         <div className="flex items-center mb-4">
           <h3 className="text-xl font-bold">Data Management</h3>
@@ -378,7 +402,7 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
           </EnhancedTooltip>
         </div>
         
-        {/* P2P Sync Call-to-Action */}
+        {/* LEGACY: P2P Sync Call-to-Action - Hidden in favor of cloud sharing
         <div className="bg-blue-900/30 border border-blue-700 rounded-lg p-4 mb-6">
           <div className="flex items-start">
             <div className="mr-3 p-2 bg-blue-800 rounded-full flex-shrink-0">
@@ -408,7 +432,8 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
             </div>
           </div>
         </div>
-        
+        */}
+
         {/* Manual Data Sharing Call-to-Action */}
         <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 mb-6">
           <div className="flex items-start">
@@ -589,20 +614,22 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
                 Match data is stored locally on this device using your browser's storage. It is recommended you back up your data locally with Export Data (in case your browser's storage gets cleared).
               </p>
               <p>
-                Use direct data sharing, or manually import and export data to transfer
+                Use the Cloud Sync feature to share your stats publicly, or manually import and export data to transfer
                 match records between devices or merge records from different devices (e.g. with friends).
               </p>
             </div>
           </div>
         </div>
       </div>
-      
-      {/* P2P Connection Modal */}
-      <ConnectionModal 
+      )}
+
+      {/* LEGACY: P2P Connection Modal - Hidden in favor of cloud sharing
+      <ConnectionModal
         isOpen={showConnectionModal}
         onClose={handleCloseConnectionModal}
         onDataReceived={handleDataReceived}
       />
+      */}
       
       {/* Edit Player Data Modal */}
       <EditPlayerDataModal

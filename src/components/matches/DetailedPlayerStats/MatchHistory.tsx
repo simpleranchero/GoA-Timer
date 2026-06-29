@@ -1,7 +1,8 @@
 // src/components/matches/DetailedPlayerStats/MatchHistory.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Calendar, Users, Shield, Swords, Star, Hexagon, ChevronLeft, ChevronRight } from 'lucide-react';
-import dbService, { DBMatch, DBMatchPlayer } from '../../../services/DatabaseService';
+import { DBMatch, DBMatchPlayer } from '../../../services/DatabaseService';
+import { useDataSource } from '../../../hooks/useDataSource';
 import { getRoleTooltip } from '../../../shared/utils/roleDescriptions';
 import EnhancedTooltip from '../../common/EnhancedTooltip';
 
@@ -23,29 +24,67 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ playerId }) => {
   const [matchHistory, setMatchHistory] = useState<MatchRecord[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
-  
+
+  // Use view-mode-aware data source
+  const { isViewModeLoading, getPlayerStats, getAllMatches, getMatch, getMatchPlayers } = useDataSource();
+
   const matchesPerPage = 10;
+
+  // Read recencyMonths from localStorage (controlled by PlayerStats filter)
+  const recencyMonths = (() => {
+    const saved = localStorage.getItem('playerStats_recencyMonths');
+    return saved ? parseInt(saved, 10) : null; // null = All Time
+  })();
+
+  // Calculate date range based on recencyMonths
+  const dateRange = useMemo(() => {
+    if (recencyMonths === null) {
+      return { startDate: null, endDate: null };
+    }
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - recencyMonths);
+    return { startDate, endDate };
+  }, [recencyMonths]);
 
   // Load match history data
   useEffect(() => {
     const loadMatchHistory = async () => {
+      // Wait for view mode data to load
+      if (isViewModeLoading) return;
+
       try {
         setLoading(true);
         setError(null);
-        
-        // Get player's match history
-        const playerStats = await dbService.getPlayerStats(playerId);
-        const playerMatches = playerStats.matchesPlayed;
-        
+
+        // Get player's match history using view-mode-aware methods
+        const playerStats = await getPlayerStats(playerId);
+        let playerMatches = playerStats.matchesPlayed;
+
+        // Filter by date range if recency filter is active
+        if (dateRange.startDate && dateRange.endDate) {
+          // Need to get match dates to filter
+          const allMatches = await getAllMatches();
+          const validMatchIds = new Set(
+            allMatches
+              .filter(match => {
+                const matchDate = new Date(match.date);
+                return matchDate >= dateRange.startDate! && matchDate <= dateRange.endDate!;
+              })
+              .map(m => m.id)
+          );
+          playerMatches = playerMatches.filter(mp => validMatchIds.has(mp.matchId));
+        }
+
         // Build detailed match records
         const matchRecords: MatchRecord[] = [];
-        
+
         for (const playerMatch of playerMatches) {
           try {
-            // Get full match data and all participants
+            // Get full match data and all participants using view-mode-aware methods
             const [fullMatch, allPlayers] = await Promise.all([
-              dbService.getMatch(playerMatch.matchId),
-              dbService.getMatchPlayers(playerMatch.matchId)
+              getMatch(playerMatch.matchId),
+              getMatchPlayers(playerMatch.matchId)
             ]);
             
             if (fullMatch && allPlayers.length > 0) {
@@ -86,8 +125,10 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ playerId }) => {
       }
     };
 
-    loadMatchHistory();
-  }, [playerId]);
+    if (!isViewModeLoading) {
+      loadMatchHistory();
+    }
+  }, [playerId, dateRange.startDate, dateRange.endDate, isViewModeLoading, getPlayerStats, getAllMatches, getMatch, getMatchPlayers]);
 
   // Get role icon with tooltip
   const getRoleIcon = (role: string | undefined) => {
@@ -140,7 +181,7 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ playerId }) => {
     setCurrentPage(Math.max(1, Math.min(page, totalPages)));
   };
 
-  if (loading) {
+  if (loading || isViewModeLoading) {
     return (
       <div className="bg-gray-700 rounded-lg p-6 mb-6">
         <div className="animate-pulse">
@@ -182,7 +223,7 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ playerId }) => {
           <Calendar size={20} className="mr-2 text-blue-400" />
           Match History
         </h3>
-        
+
         {totalPages > 1 && (
           <div className="flex items-center gap-2">
             <button
@@ -205,6 +246,16 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ playerId }) => {
           </div>
         )}
       </div>
+
+      {/* Date Range Indicator */}
+      {recencyMonths !== null && dateRange.startDate && dateRange.endDate && (
+        <div className="mb-4 p-2 bg-blue-900/30 border border-blue-700/50 rounded text-sm flex items-center">
+          <Calendar size={14} className="mr-2 text-blue-400" />
+          <span className="text-blue-200">
+            Showing matches from last {recencyMonths} month{recencyMonths !== 1 ? 's' : ''}
+          </span>
+        </div>
+      )}
 
       {/* Mobile-first responsive table */}
       <div className="space-y-4">

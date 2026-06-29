@@ -1,0 +1,423 @@
+// src/components/matches/DetailedHeroStats.tsx
+import React, { useState, useEffect, useMemo } from 'react';
+import { ChevronLeft, Globe, Users, Loader } from 'lucide-react';
+import { useSound } from '../../context/SoundContext';
+import { useDataSource } from '../../hooks/useDataSource';
+import { heroes as allHeroData } from '../../data/heroes';
+import { HeroImpactResult, Hero, VictoryType, Team } from '../../types';
+import { GlobalStatsService } from '../../services/supabase/GlobalStatsService';
+import ForestPlot from './ForestPlot';
+import { SkillGradientTab } from './DetailedHeroStats/SkillGradientTab';
+import { VictoryProfileTab } from './DetailedHeroStats/VictoryProfileTab';
+import { RelationshipsTab } from './DetailedHeroStats/RelationshipsTab';
+import WinRateTab from './DetailedHeroStats/WinRateTab';
+import { MatchHistoryTab } from './DetailedHeroStats/MatchHistoryTab';
+
+interface DetailedHeroStatsProps {
+  heroId: number;
+  statsMode?: 'local' | 'global';
+  onBack: () => void;
+}
+
+interface HeroMatch {
+  date: Date;
+  won: boolean;
+  team: Team;
+  victoryType?: VictoryType;
+}
+
+const LOCAL_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'win-rate', label: 'Win Rate' },
+  { key: 'relationships', label: 'Relationships' },
+  { key: 'skill-gradient', label: 'Skill Gradient' },
+  { key: 'victory-profile', label: 'Victory Profile' },
+  { key: 'match-history', label: 'Match History' },
+] as const;
+
+const GLOBAL_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'relationships', label: 'Relationships' },
+  { key: 'skill-gradient', label: 'Skill Gradient' },
+  { key: 'victory-profile', label: 'Victory Profile' },
+] as const;
+
+type TabKey = typeof LOCAL_TABS[number]['key'];
+
+const DetailedHeroStats: React.FC<DetailedHeroStatsProps> = ({ heroId, statsMode = 'local', onBack }) => {
+  const { playSound } = useSound();
+  const { isViewModeLoading, getHeroStats, getHeroImpact, getAllMatches, getAllMatchPlayers } = useDataSource();
+
+  const [activeTab, setActiveTab] = useState<TabKey>('overview');
+  const [loading, setLoading] = useState(true);
+
+  const gameLengthFilter = useMemo<'all' | 'quick' | 'long'>(() => {
+    const saved = localStorage.getItem('heroStats_gameLengthFilter');
+    return (saved === 'quick' || saved === 'long') ? saved : 'all';
+  }, []);
+  const playerCountFilter = useMemo<number | null>(() => {
+    const saved = localStorage.getItem('heroStats_playerCountFilter');
+    return saved ? parseInt(saved, 10) : null;
+  }, []);
+
+  const heroData: Hero | undefined = useMemo(
+    () => allHeroData.find(h => h.id === heroId),
+    [heroId]
+  );
+
+  const tabs = statsMode === 'global' ? GLOBAL_TABS : LOCAL_TABS;
+
+  const [heroStats, setHeroStats] = useState<{
+    totalGames: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    bestTeammates: { heroId: number; heroName: string; icon: string; winRate: number; gamesPlayed: number }[];
+    bestAgainst: { heroId: number; heroName: string; icon: string; winRate: number; gamesPlayed: number }[];
+    worstAgainst: { heroId: number; heroName: string; icon: string; winRate: number; gamesPlayed: number }[];
+  } | null>(null);
+  const [impact, setImpact] = useState<HeroImpactResult | null>(null);
+  const [impactLoading, setImpactLoading] = useState(true);
+  const [heroMatches, setHeroMatches] = useState<HeroMatch[]>([]);
+
+  // Load basic stats (fast) — controls the main loading spinner
+  useEffect(() => {
+    if (isViewModeLoading) return;
+
+    const load = async () => {
+      setLoading(true);
+      try {
+        if (statsMode === 'global') {
+          const [statsResp, relResp] = await Promise.all([
+            GlobalStatsService.getGlobalHeroStats(1, 1),
+            GlobalStatsService.getGlobalHeroRelationships(heroId),
+          ]);
+          const stat = statsResp.success && statsResp.data
+            ? statsResp.data.find(s => s.heroId === heroId)
+            : null;
+          const rels = relResp.success && relResp.data ? relResp.data : null;
+          if (stat) {
+            setHeroStats({
+              totalGames: stat.totalGames,
+              wins: stat.wins,
+              losses: stat.losses,
+              winRate: stat.winRate,
+              bestTeammates: rels?.bestTeammates || stat.bestTeammates || [],
+              bestAgainst: rels?.bestAgainst || stat.bestAgainst || [],
+              worstAgainst: rels?.worstAgainst || stat.worstAgainst || [],
+            });
+          }
+        } else {
+          const [statsArr, allMatches, allMatchPlayers] = await Promise.all([
+            getHeroStats(1, undefined, undefined, gameLengthFilter, playerCountFilter),
+            getAllMatches(),
+            getAllMatchPlayers(),
+          ]);
+          const stat = statsArr.find(s => s.heroId === heroId) ?? null;
+          if (stat) {
+            setHeroStats({
+              totalGames: stat.totalGames,
+              wins: stat.wins,
+              losses: stat.losses,
+              winRate: stat.winRate,
+              bestTeammates: stat.bestTeammates || [],
+              bestAgainst: stat.bestAgainst || [],
+              worstAgainst: stat.worstAgainst || [],
+            });
+          }
+          const matchesMap = new Map(allMatches.map(m => [m.id, m]));
+          const heroMPs = allMatchPlayers.filter(mp => mp.heroId === heroId);
+          const filteredMatches: HeroMatch[] = heroMPs
+            .map(mp => {
+              const match = matchesMap.get(mp.matchId);
+              if (!match) return null;
+              return {
+                date: new Date(match.date),
+                won: mp.team === match.winningTeam,
+                team: mp.team,
+                victoryType: match.victoryType,
+              } as HeroMatch;
+            })
+            .filter((m): m is HeroMatch => m !== null)
+            .sort((a, b) => b.date.getTime() - a.date.getTime());
+          setHeroMatches(filteredMatches);
+        }
+      } catch (err) {
+        console.error('Error loading detailed hero stats:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [isViewModeLoading, heroId, statsMode, gameLengthFilter, playerCountFilter, getHeroStats, getAllMatches, getAllMatchPlayers]);
+
+  // Load impact separately (slow) — shows a loading skeleton, doesn't block page
+  useEffect(() => {
+    if (isViewModeLoading) return;
+
+    const loadImpact = async () => {
+      setImpactLoading(true);
+      try {
+        if (statsMode === 'global') {
+          const resp = await GlobalStatsService.getGlobalHeroSkillStats();
+          if (resp.success && resp.data) {
+            setImpact(resp.data.find(r => r.heroId === heroId) ?? null);
+          }
+        } else {
+          const results = await getHeroImpact(gameLengthFilter, playerCountFilter);
+          setImpact(results.find(r => r.heroId === heroId) ?? null);
+        }
+      } catch (err) {
+        console.error('Error loading hero impact:', err);
+      } finally {
+        setImpactLoading(false);
+      }
+    };
+
+    loadImpact();
+  }, [isViewModeLoading, heroId, statsMode, gameLengthFilter, playerCountFilter, getHeroImpact]);
+
+  const handleBack = () => {
+    playSound('buttonClick');
+    onBack();
+  };
+
+  const handleTabChange = (tab: TabKey) => {
+    playSound('buttonClick');
+    setActiveTab(tab);
+  };
+
+  if (loading) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-6 flex justify-center items-center h-64">
+        <div className="flex flex-col items-center gap-3">
+          <Loader size={32} className="animate-spin text-blue-400" />
+          <span className="text-gray-400">Loading hero details...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!heroData) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-6">
+        <button onClick={handleBack} className="flex items-center text-gray-300 hover:text-white mb-4">
+          <ChevronLeft size={20} className="mr-1" />
+          <span>Back</span>
+        </button>
+        <p className="text-gray-400">Hero not found.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-6">
+      {/* Back button */}
+      <button
+        onClick={handleBack}
+        className="flex items-center text-gray-300 hover:text-white mb-6"
+      >
+        <ChevronLeft size={20} className="mr-1" />
+        <span>Back to Hero Statistics</span>
+      </button>
+
+      {/* Stats mode indicator */}
+      <div className={`mb-4 px-3 py-2 rounded-lg flex items-center text-sm ${
+        statsMode === 'global'
+          ? 'bg-green-900/30 border border-green-700/50 text-green-200'
+          : 'bg-blue-900/30 border border-blue-700/50 text-blue-200'
+      }`}>
+        {statsMode === 'global' ? (
+          <><Globe size={16} className="mr-2 flex-shrink-0" />Showing global statistics</>
+        ) : (
+          <><Users size={16} className="mr-2 flex-shrink-0" />Showing play group statistics</>
+        )}
+      </div>
+
+      {/* Hero header */}
+      <div className="flex items-center gap-4 mb-6 bg-gray-700 rounded-lg p-4">
+        <div className="w-20 h-20 rounded-full overflow-hidden flex-shrink-0 bg-gray-900">
+          <img
+            src={heroData.icon}
+            alt={heroData.name}
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              (e.target as HTMLImageElement).src = 'https://via.placeholder.com/80?text=Hero';
+            }}
+          />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-2xl font-bold">{heroData.name}</h2>
+          <div className="text-sm text-gray-300 mt-0.5">{heroData.roles.join(' • ')}</div>
+          <div className="text-xs text-blue-400 mt-1">
+            {heroData.expansion} • Complexity: {heroData.complexity}
+          </div>
+          {heroData.description && (
+            <p className="text-sm text-gray-400 mt-2">{heroData.description}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex flex-wrap gap-1 mb-6">
+        {tabs.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => handleTabChange(tab.key)}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              activeTab === tab.key
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      {activeTab === 'overview' && (
+        <div className="space-y-4">
+          {/* Win rate summary */}
+          {heroStats ? (
+            <div className="bg-gray-700 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-gray-300 mb-3">Win Rate Summary</h3>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm text-gray-400">Win Rate</span>
+                <span className="font-medium">{heroStats.winRate.toFixed(1)}%</span>
+              </div>
+              <div className="h-2 bg-red-600 rounded-full overflow-hidden mb-2">
+                <div
+                  className="h-full bg-green-500"
+                  style={{ width: `${heroStats.winRate}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>Wins: {heroStats.wins}</span>
+                <span>Losses: {heroStats.losses}</span>
+                <span>Total: {heroStats.totalGames}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-gray-700 rounded-lg p-4 text-sm text-gray-500 italic">
+              No match data recorded for this hero.
+            </div>
+          )}
+
+          {/* Hero Impact */}
+          <div className="bg-gray-700 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3">Hero Impact</h3>
+
+            {impactLoading ? (
+              <div className="space-y-3 animate-pulse">
+                <div className="h-5 bg-gray-600 rounded w-24" />
+                <div className="h-8 bg-gray-600 rounded" />
+                <div className="h-4 bg-gray-600 rounded w-48" />
+              </div>
+            ) : impact ? (
+              <>
+                <div className="flex justify-between items-center mb-3">
+                  <div className="flex items-center gap-2">
+                    {!impact.sufficient && (
+                      <span className="text-xs px-2 py-0.5 bg-gray-600 text-gray-300 rounded-full">EARLY DATA</span>
+                    )}
+                    <span className={`text-lg font-bold ${
+                      impact.ciLower > 0 ? 'text-green-400' :
+                      impact.ciUpper < 0 ? 'text-yellow-400' : 'text-gray-400'
+                    }`}>
+                      {impact.ate >= 0 ? '+' : ''}{(impact.ate * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <span className="text-xs text-gray-500">{impact.gamesWithHero} games</span>
+                </div>
+                <ForestPlot
+                  ate={impact.ate}
+                  ciLower={impact.ciLower}
+                  ciUpper={impact.ciUpper}
+                  sufficient={impact.sufficient}
+                  size="large"
+                />
+                {impact.gradientBadge !== 'balanced' && (
+                  <div className="mt-3">
+                    <span className={`text-xs px-2 py-1 rounded-full ${
+                      impact.gradientBadge === 'rewards-skill'
+                        ? 'bg-purple-900/50 text-purple-300'
+                        : 'bg-green-900/50 text-green-300'
+                    }`}>
+                      {impact.gradientBadge === 'rewards-skill' ? 'Rewards Skill' : 'Beginner Friendly'}
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-gray-500 italic">Not enough data to compute hero impact.</p>
+            )}
+          </div>
+
+          {/* Methodology Explanation */}
+          <div className="bg-gray-700/50 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3">How Hero Impact Works</h3>
+            <div className="space-y-3 text-sm text-gray-400">
+              <p>
+                Hero Impact uses <span className="text-gray-200">parametric g-computation</span> to
+                estimate the causal effect of picking this hero on win probability. Unlike raw win
+                rate, it controls for confounders like team composition and player skill ratings.
+              </p>
+              <p>
+                The <span className="text-gray-200">dot</span> shows the estimated impact
+                (Average Treatment Effect). The <span className="text-gray-200">bar</span> shows
+                the 95% confidence interval.
+                A <span className="text-green-400">green</span> result means the CI is entirely
+                positive. <span className="text-yellow-400">Amber</span> means entirely
+                negative. <span className="text-gray-300">Grey</span> means the interval
+                crosses zero — the effect is uncertain.
+              </p>
+              {impact?.gradientBadge !== 'balanced' && (
+                <p>
+                  <span className="text-purple-300">Rewards Skill</span> means the hero benefits
+                  more from strong teams. <span className="text-green-300">Beginner Friendly</span> means
+                  the hero performs relatively better with less experienced teams.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'win-rate' && (
+        <WinRateTab heroName={heroData.name} matches={heroMatches} />
+      )}
+
+      {activeTab === 'relationships' && heroStats && (
+        <RelationshipsTab
+          bestTeammates={heroStats.bestTeammates}
+          bestAgainst={heroStats.bestAgainst}
+          worstAgainst={heroStats.worstAgainst}
+        />
+      )}
+
+      {activeTab === 'skill-gradient' && impact && (
+        <SkillGradientTab
+          gradient={impact.gradient}
+          gradientBadge={impact.gradientBadge}
+          heroName={heroData.name}
+        />
+      )}
+
+      {activeTab === 'victory-profile' && impact && (
+        <VictoryProfileTab
+          victoryProfile={impact.victoryProfile}
+          winStyleBadge={impact.winStyleBadge}
+          heroName={heroData.name}
+        />
+      )}
+
+      {activeTab === 'match-history' && (
+        <MatchHistoryTab matches={heroMatches} heroName={heroData.name} />
+      )}
+    </div>
+  );
+};
+
+export default DetailedHeroStats;

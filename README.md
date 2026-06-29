@@ -91,6 +91,41 @@ This app has not been officially approved by Wolff Designa (the designers of Gua
 
 # Future
 
-Add Firebase database. This would allow automatic synchronisation across your devices (with login) of IndexedDB database (which we retain), and the option to add friends (and to automatically or manually synchroise with them).
 
-Option to opt into global database. Which would track Global Player ELOs; as well as hero stats, win rates by hero. Best partners for each hero. Best counters for each hero. Which heroes each hero is most effective against. 
+
+
+New Draft Type
+- Novel
+-- Each player can choose from 3 options at least 1 1-2 star and at least 1 3-4 star they havent played with
+
+- Pass
+- Select Num Players + 4 heroes at random
+- Each team chooses from these and pass them round.
+
+
+Card Database
+- Opening Guides
+- Build Guides
+- Voting System
+Add a Builds page where users can suggest builds? Users can rate these
+Add an openings section where users can suggest openings. Users can rate these.
+Add all the card data.
+Record Build during game: items and upgrades.
+
+Tournament
+- Round Robin
+- Brackets
+- Seeding
+- Team size
+- Draft Type (even if they dont want to use the full timer should be able to use the drafting)
+- Add new players for tournament
+
+When a tournament is active
+- Track and share results
+- i.e. log a game as a specific tournament game with recording functionality/when playing a game through the main timer app
+- Way of viewing past tournaments or in progress tournaments matches.
+
+
+measuring
+-good hero for different skill levels?
+- hero effect on victory condition (when the team wins)

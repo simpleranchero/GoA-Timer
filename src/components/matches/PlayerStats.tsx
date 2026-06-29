@@ -1,17 +1,26 @@
 // src/components/matches/PlayerStats.tsx
-import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, Search, TrendingUp, Users, Swords, Info, Trophy, Medal, Hexagon, Camera, X, HelpCircle, User } from 'lucide-react';
-import { DBPlayer } from '../../services/DatabaseService';
+import React, { useState, useEffect, useMemo } from 'react';
+import { ChevronLeft, Search, TrendingUp, Users, Swords, Info, Trophy, Medal, Hexagon, X, HelpCircle, User, Filter, ChevronDown, ChevronUp, Calendar, Network, Crown, Flag, Skull, Flame } from 'lucide-react';
+import { DBPlayer, DBMatch } from '../../services/DatabaseService';
 import dbService, { getDisplayRating } from '../../services/DatabaseService';
 import { useSound } from '../../context/SoundContext';
 import EnhancedTooltip from '../common/EnhancedTooltip';
-import html2canvas from 'html2canvas';
+import PlayerRelationshipGraph from './PlayerRelationshipGraph';
+import { useDataSource } from '../../hooks/useDataSource';
+import { useStatsFilter } from '../../context/StatsFilterContext';
+import { Team } from '../../types';
 
 
 interface PlayerStatsProps {
   onBack: () => void;
   onViewSkillOverTime: () => void;
   onViewPlayerDetails: (playerId: string) => void;
+}
+
+interface VictoryTypeStats {
+  throne: { wins: number; total: number };
+  wave: { wins: number; total: number };
+  kills: { wins: number; total: number };
 }
 
 interface PlayerWithStats extends DBPlayer {
@@ -27,6 +36,9 @@ interface PlayerWithStats extends DBPlayer {
   hasCombatStats: boolean;
   rank: number;
   displayRating: number;
+  victoryTypeStats: VictoryTypeStats;
+  currentStreak: number;
+  bestStreak: number;
 }
 
 // Modal component for skill rating explanation
@@ -283,70 +295,309 @@ const RankDisplay: React.FC<{ rank: number; skill: number }> = ({ rank, skill })
 
 const PlayerStats: React.FC<PlayerStatsProps> = ({ onBack, onViewSkillOverTime, onViewPlayerDetails }) => {
   const { playSound } = useSound();
+  const { isViewMode, isViewModeLoading, getAllPlayers, getAllMatchPlayers, getAllMatches, getFilteredPlayerStats } = useDataSource();
+  const { setPlayerStatsFilters } = useStatsFilter();
   const [players, setPlayers] = useState<PlayerWithStats[]>([]);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
   const [sortBy, setSortBy] = useState<string>('skill');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [takingScreenshot, setTakingScreenshot] = useState<boolean>(false);
   const [showSkillExplainer, setShowSkillExplainer] = useState<boolean>(false);
-  
-  const contentRef = useRef<HTMLDivElement>(null);
-  
-  // Load player data on component mount
+  const [showFilterMenu, setShowFilterMenu] = useState<boolean>(false);
+  const [minGamesRelationship, setMinGamesRelationship] = useState<number>(() => {
+    const saved = localStorage.getItem('playerStats_minGames');
+    return saved ? parseInt(saved, 10) : 3;
+  });
+  const [recencyMonths, setRecencyMonths] = useState<number | null>(() => {
+    const saved = localStorage.getItem('playerStats_recencyMonths');
+    return saved ? parseInt(saved, 10) : null; // null = All Time
+  });
+  const [recalculateTrueSkill, setRecalculateTrueSkill] = useState<boolean>(() => {
+    return localStorage.getItem('playerStats_recalculateTrueSkill') === 'true';
+  });
+  const [gameLengthFilter, setGameLengthFilter] = useState<'all' | 'quick' | 'long'>(() => {
+    const saved = localStorage.getItem('playerStats_gameLengthFilter');
+    return (saved === 'quick' || saved === 'long') ? saved : 'all';
+  });
+  const [playerCountFilter, setPlayerCountFilter] = useState<number | null>(() => {
+    const saved = localStorage.getItem('playerStats_playerCountFilter');
+    return saved ? parseInt(saved, 10) : null;
+  });
+  const [showRelationshipGraph, setShowRelationshipGraph] = useState<boolean>(false);
+
+  // Persist minGamesRelationship to localStorage
+  useEffect(() => {
+    localStorage.setItem('playerStats_minGames', minGamesRelationship.toString());
+  }, [minGamesRelationship]);
+
+  // Persist recencyMonths to localStorage
+  useEffect(() => {
+    if (recencyMonths === null) {
+      localStorage.removeItem('playerStats_recencyMonths');
+    } else {
+      localStorage.setItem('playerStats_recencyMonths', recencyMonths.toString());
+    }
+  }, [recencyMonths]);
+
+  // Persist recalculateTrueSkill to localStorage
+  useEffect(() => {
+    localStorage.setItem('playerStats_recalculateTrueSkill', recalculateTrueSkill.toString());
+  }, [recalculateTrueSkill]);
+
+  // Persist gameLengthFilter to localStorage
+  useEffect(() => {
+    localStorage.setItem('playerStats_gameLengthFilter', gameLengthFilter);
+  }, [gameLengthFilter]);
+
+  // Persist playerCountFilter to localStorage
+  useEffect(() => {
+    if (playerCountFilter === null) {
+      localStorage.removeItem('playerStats_playerCountFilter');
+    } else {
+      localStorage.setItem('playerStats_playerCountFilter', playerCountFilter.toString());
+    }
+  }, [playerCountFilter]);
+
+  // Calculate date range based on recencyMonths
+  const dateRange = useMemo(() => {
+    if (recencyMonths === null) {
+      return { startDate: undefined, endDate: undefined };
+    }
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - recencyMonths);
+    return { startDate, endDate };
+  }, [recencyMonths]);
+
+  // Sync filters to context for child components (SkillOverTime)
+  useEffect(() => {
+    setPlayerStatsFilters({
+      recencyMonths,
+      minGamesRelationship,
+      recalculateTrueSkill,
+      dateRange,
+      gameLengthFilter,
+      playerCountFilter
+    });
+  }, [recencyMonths, minGamesRelationship, recalculateTrueSkill, dateRange, gameLengthFilter, playerCountFilter, setPlayerStatsFilters]);
+
+  // Load player data on component mount and when filters change
   useEffect(() => {
     const loadPlayers = async () => {
       setLoading(true);
       try {
-        const allPlayers = await dbService.getAllPlayers();
-        
-        // Get fresh TrueSkill ratings for consistency with SkillOverTime
-        const currentRatings = await dbService.getCurrentTrueSkillRatings();
-        
-        const playersWithStats = await Promise.all(
-          allPlayers.map(async (player) => {
-            const stats = await dbService.getPlayerStats(player.id);
-            const matchesPlayed = stats.matchesPlayed;
-            
-            const kills = matchesPlayed.reduce((sum, match) => sum + (match.kills || 0), 0);
-            const deaths = matchesPlayed.reduce((sum, match) => sum + (match.deaths || 0), 0);
-            const assists = matchesPlayed.reduce((sum, match) => sum + (match.assists || 0), 0);
-            const gold = matchesPlayed.reduce((sum, match) => sum + (match.goldEarned || 0), 0);
-            const minionKills = matchesPlayed.reduce((sum, match) => sum + (match.minionKills || 0), 0);
-            
-            const kdRatio = deaths === 0 ? kills : kills / deaths;
-            const winRate = player.totalGames > 0 ? (player.wins / player.totalGames) * 100 : 0;
-            const hasCombatStats = kills > 0 || deaths > 0 || assists > 0 || gold > 0;
-            
-            // Use fresh TrueSkill rating calculation (consistent with SkillOverTime)
-            const displayRating = currentRatings[player.id] || getDisplayRating(player);
-            
+        let playersWithStats: PlayerWithStats[];
+
+        // Fetch matches for victory type stats
+        const allMatches = await getAllMatches();
+        const matchMap = new Map<string, DBMatch>();
+        allMatches.forEach(match => matchMap.set(match.id, match));
+
+        // Helper function to calculate victory type stats for a player
+        const calculateVictoryTypeStats = (
+          playerMatchIds: string[],
+          playerTeams: Map<string, Team>
+        ): VictoryTypeStats => {
+          const stats: VictoryTypeStats = {
+            throne: { wins: 0, total: 0 },
+            wave: { wins: 0, total: 0 },
+            kills: { wins: 0, total: 0 }
+          };
+
+          playerMatchIds.forEach(matchId => {
+            const match = matchMap.get(matchId);
+            if (match?.victoryType) {
+              const playerTeam = playerTeams.get(matchId);
+              const isWin = playerTeam === match.winningTeam;
+              const key = match.victoryType as keyof VictoryTypeStats;
+              stats[key].total++;
+              if (isWin) {
+                stats[key].wins++;
+              }
+            }
+          });
+
+          return stats;
+        };
+
+        // Helper function to calculate win streaks for a player
+        const calculateStreaks = (
+          playerMatchIds: string[],
+          playerTeams: Map<string, Team>
+        ): { currentStreak: number; bestStreak: number } => {
+          // Get matches sorted by date (most recent first)
+          const matchesWithDates = playerMatchIds
+            .map(matchId => ({ matchId, match: matchMap.get(matchId) }))
+            .filter((m): m is { matchId: string; match: DBMatch } => m.match !== undefined)
+            .sort((a, b) => new Date(b.match.date).getTime() - new Date(a.match.date).getTime());
+
+          let currentStreak = 0;
+          let bestStreak = 0;
+          let tempStreak = 0;
+          let countingCurrent = true;
+
+          for (const { matchId, match } of matchesWithDates) {
+            const playerTeam = playerTeams.get(matchId);
+            const isWin = playerTeam === match.winningTeam;
+
+            if (isWin) {
+              tempStreak++;
+              if (countingCurrent) currentStreak++;
+              bestStreak = Math.max(bestStreak, tempStreak);
+            } else {
+              tempStreak = 0;
+              countingCurrent = false; // Stop counting current after first loss
+            }
+          }
+
+          return { currentStreak, bestStreak };
+        };
+
+        const hasMatchFilters = gameLengthFilter !== 'all' || playerCountFilter !== null;
+        if ((dateRange.startDate && dateRange.endDate) || hasMatchFilters) {
+          const filteredResult = await getFilteredPlayerStats(
+            dateRange.startDate,
+            dateRange.endDate,
+            recalculateTrueSkill,
+            gameLengthFilter,
+            playerCountFilter
+          );
+
+          // Get all match players for victory type calculation
+          const allMatchPlayers = await getAllMatchPlayers();
+
+          playersWithStats = filteredResult.players.map(stats => {
+            // Find player's matches and teams for victory type stats
+            const playerMatches = allMatchPlayers.filter(mp =>
+              mp.playerId === stats.id || mp.playerId === stats.name
+            );
+            const playerMatchIds = playerMatches.map(pm => pm.matchId);
+            const playerTeams = new Map<string, Team>();
+            playerMatches.forEach(pm => playerTeams.set(pm.matchId, pm.team));
+
+            const streaks = calculateStreaks(playerMatchIds, playerTeams);
+
             return {
-              ...player,
+              id: stats.id,
+              name: stats.name,
+              totalGames: stats.gamesPlayed,
+              wins: stats.wins,
+              losses: stats.losses,
+              mu: 0, // Not used in display
+              sigma: 0, // Not used in display
+              elo: 0, // Not used in display
+              lastPlayed: stats.lastPlayed || new Date(),
+              dateCreated: new Date(), // Not used in filtered display
               favoriteHeroes: stats.favoriteHeroes,
               favoriteRoles: stats.favoriteRoles,
-              winRate,
-              kills,
-              deaths,
-              assists,
-              kdRatio: parseFloat(kdRatio.toFixed(2)),
-              averageGold: player.totalGames > 0 ? Math.round(gold / player.totalGames) : 0,
-              averageMinionKills: player.totalGames > 0 ? Math.round(minionKills / player.totalGames) : 0,
-              hasCombatStats,
-              displayRating,
-              rank: 0
+              winRate: stats.winRate,
+              kills: stats.kills,
+              deaths: stats.deaths,
+              assists: stats.assists,
+              kdRatio: stats.kdRatio,
+              averageGold: stats.averageGold,
+              averageMinionKills: stats.averageMinionKills,
+              hasCombatStats: stats.hasCombatStats,
+              displayRating: stats.displayRating,
+              rank: 0,
+              victoryTypeStats: calculateVictoryTypeStats(playerMatchIds, playerTeams),
+              currentStreak: streaks.currentStreak,
+              bestStreak: streaks.bestStreak
             };
-          })
-        );
-        
+          });
+        } else {
+          // Use original logic for all-time stats
+          // In view mode, use shared data via hook; otherwise use dbService
+          const allPlayers = await getAllPlayers();
+          const allMatchPlayers = await getAllMatchPlayers();
+
+          // Get fresh TrueSkill ratings for consistency with SkillOverTime
+          // (not available in view mode, so use stored values)
+          const currentRatings = isViewMode ? {} : await dbService.getCurrentTrueSkillRatings();
+
+          playersWithStats = await Promise.all(
+            allPlayers.map(async (player) => {
+              // In view mode, calculate stats from shared match players data
+              const playerMatches = allMatchPlayers.filter(mp => mp.playerId === player.id || mp.playerId === player.name);
+
+              // Calculate hero and role stats from match players
+              const heroCount: Record<number, { heroId: number; heroName: string; count: number }> = {};
+              const roleCount: Record<string, number> = {};
+
+              let kills = 0, deaths = 0, assists = 0, gold = 0, minionKills = 0;
+
+              playerMatches.forEach(mp => {
+                kills += mp.kills || 0;
+                deaths += mp.deaths || 0;
+                assists += mp.assists || 0;
+                gold += mp.goldEarned || 0;
+                minionKills += mp.minionKills || 0;
+
+                // Track hero usage
+                if (!heroCount[mp.heroId]) {
+                  heroCount[mp.heroId] = { heroId: mp.heroId, heroName: mp.heroName, count: 0 };
+                }
+                heroCount[mp.heroId].count++;
+
+                // Track role usage
+                (mp.heroRoles || []).forEach(role => {
+                  roleCount[role] = (roleCount[role] || 0) + 1;
+                });
+              });
+
+              const favoriteHeroes = Object.values(heroCount)
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 3);
+
+              const favoriteRoles = Object.entries(roleCount)
+                .map(([role, count]) => ({ role, count }))
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 3);
+
+              const kdRatio = deaths === 0 ? kills : kills / deaths;
+              const winRate = player.totalGames > 0 ? (player.wins / player.totalGames) * 100 : 0;
+              const hasCombatStats = kills > 0 || deaths > 0 || assists > 0 || gold > 0;
+
+              // Use fresh TrueSkill rating calculation (consistent with SkillOverTime)
+              const displayRating = currentRatings[player.id] || getDisplayRating(player);
+
+              // Calculate victory type stats and streaks
+              const playerMatchIds = playerMatches.map(pm => pm.matchId);
+              const playerTeams = new Map<string, Team>();
+              playerMatches.forEach(pm => playerTeams.set(pm.matchId, pm.team));
+              const victoryTypeStats = calculateVictoryTypeStats(playerMatchIds, playerTeams);
+              const streaks = calculateStreaks(playerMatchIds, playerTeams);
+
+              return {
+                ...player,
+                favoriteHeroes,
+                favoriteRoles,
+                winRate,
+                kills,
+                deaths,
+                assists,
+                kdRatio: parseFloat(kdRatio.toFixed(2)),
+                averageGold: player.totalGames > 0 ? Math.round(gold / player.totalGames) : 0,
+                averageMinionKills: player.totalGames > 0 ? Math.round(minionKills / player.totalGames) : 0,
+                hasCombatStats,
+                displayRating,
+                rank: 0,
+                victoryTypeStats,
+                currentStreak: streaks.currentStreak,
+                bestStreak: streaks.bestStreak
+              };
+            })
+          );
+        }
+
         const playersWithMatches = playersWithStats.filter(player => player.totalGames > 0);
-        
+
         const sortedByRating = [...playersWithMatches].sort((a, b) => b.displayRating - a.displayRating);
-        
+
         let currentRank = 1;
         let currentRating = sortedByRating.length > 0 ? sortedByRating[0].displayRating : 0;
         let tieCount = 0;
-        
+
         const playersWithRanks = sortedByRating.map((player, index) => {
           if (player.displayRating !== currentRating) {
             currentRank = index + 1;
@@ -355,13 +606,13 @@ const PlayerStats: React.FC<PlayerStatsProps> = ({ onBack, onViewSkillOverTime, 
           } else {
             tieCount++;
           }
-          
+
           return {
             ...player,
             rank: currentRank
           };
         });
-        
+
         setPlayers(playersWithRanks);
       } catch (error) {
         console.error('Error loading player stats:', error);
@@ -369,81 +620,15 @@ const PlayerStats: React.FC<PlayerStatsProps> = ({ onBack, onViewSkillOverTime, 
         setLoading(false);
       }
     };
-    
+
+    // Don't load data while view mode is still being determined
+    if (isViewModeLoading) return;
     loadPlayers();
-  }, []);
+  }, [isViewModeLoading, dateRange.startDate, dateRange.endDate, recalculateTrueSkill, gameLengthFilter, playerCountFilter, isViewMode, getAllPlayers, getAllMatchPlayers, getAllMatches, getFilteredPlayerStats]);
   
   const handleBack = () => {
     playSound('buttonClick');
     onBack();
-  };
-  
-  const handleTakeScreenshot = async () => {
-    if (!contentRef.current) return;
-    
-    playSound('buttonClick');
-    setTakingScreenshot(true);
-    
-    try {
-      contentRef.current.classList.add('taking-screenshot');
-      
-      const titleElement = document.createElement('div');
-      titleElement.className = 'screenshot-title text-center mb-6';
-      titleElement.innerHTML = `
-        <h1 class="text-3xl font-bold">Guards of Atlantis II - Player Rankings</h1>
-        <p class="text-gray-400 mt-2">Generated on ${new Date().toLocaleDateString()}</p>
-      `;
-      
-      contentRef.current.insertBefore(titleElement, contentRef.current.firstChild);
-      
-      const footerElement = document.createElement('div');
-      footerElement.className = 'screenshot-footer text-center mt-8 text-sm text-gray-400';
-      footerElement.innerHTML = `
-        <p>Generated by Guards of Atlantis II Timer App on ${new Date().toLocaleString()}</p>
-      `;
-      
-      contentRef.current.appendChild(footerElement);
-      
-      const noScreenshotElements = contentRef.current.querySelectorAll('.no-screenshot');
-      noScreenshotElements.forEach(el => {
-        (el as HTMLElement).style.display = 'none';
-      });
-      
-      const canvas = await html2canvas(contentRef.current, {
-        backgroundColor: '#1F2937',
-        windowWidth: 1400,
-        scrollX: 0,
-        scrollY: 0,
-        scale: window.devicePixelRatio || 1,
-        logging: false,
-        allowTaint: true,
-        useCORS: true,
-        onclone: (clonedDoc) => {
-          const clonedContent = clonedDoc.querySelector('#screenshotContent');
-          if (clonedContent) {
-            clonedContent.scrollTop = 0;
-          }
-        }
-      });
-      
-      const dataUrl = canvas.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = `guards-of-atlantis-player-stats-${new Date().toISOString().slice(0, 10)}.png`;
-      link.href = dataUrl;
-      link.click();
-      
-      contentRef.current.removeChild(titleElement);
-      contentRef.current.removeChild(footerElement);
-      contentRef.current.classList.remove('taking-screenshot');
-      
-      noScreenshotElements.forEach(el => {
-        (el as HTMLElement).style.display = '';
-      });
-    } catch (error) {
-      console.error('Error creating screenshot:', error);
-    } finally {
-      setTakingScreenshot(false);
-    }
   };
   
   const handleShowSkillExplainer = () => {
@@ -563,9 +748,23 @@ const PlayerStats: React.FC<PlayerStatsProps> = ({ onBack, onViewSkillOverTime, 
       document.head.removeChild(style);
     };
   }, []);
-  
+
+  // Show relationship graph if toggled
+  if (showRelationshipGraph) {
+    return (
+      <PlayerRelationshipGraph
+        onBack={() => setShowRelationshipGraph(false)}
+        inheritedMinGames={minGamesRelationship}
+        inheritedDateRange={dateRange.startDate ? { startDate: dateRange.startDate, endDate: dateRange.endDate } : undefined}
+        recalculateTrueSkill={recalculateTrueSkill}
+        inheritedGameLengthFilter={gameLengthFilter}
+        inheritedPlayerCountFilter={playerCountFilter}
+      />
+    );
+  }
+
   return (
-    <div ref={contentRef} id="screenshotContent" className="bg-gray-800 rounded-lg p-6">
+    <div className="bg-gray-800 rounded-lg p-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 no-screenshot">
         <button
           onClick={handleBack}
@@ -590,17 +789,20 @@ const PlayerStats: React.FC<PlayerStatsProps> = ({ onBack, onViewSkillOverTime, 
               <span className="whitespace-nowrap">View Over Time</span>
             </button>
           </EnhancedTooltip>
-          
-          <EnhancedTooltip text="Take a screenshot of all player statistics" position="left">
+
+          <EnhancedTooltip text="View player relationship network graph" position="left">
             <button
-              onClick={handleTakeScreenshot}
-              className="flex items-center justify-center px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg w-full sm:w-auto"
-              disabled={takingScreenshot}
+              onClick={() => {
+                playSound('buttonClick');
+                setShowRelationshipGraph(true);
+              }}
+              className="flex items-center justify-center px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg w-full sm:w-auto"
             >
-              <Camera size={18} className="mr-2" />
-              <span className="whitespace-nowrap">{takingScreenshot ? 'Capturing...' : 'Share Stats'}</span>
+              <Network size={18} className="mr-2" />
+              <span className="whitespace-nowrap">Relationships</span>
             </button>
           </EnhancedTooltip>
+
         </div>
       </div>
       
@@ -661,24 +863,240 @@ const PlayerStats: React.FC<PlayerStatsProps> = ({ onBack, onViewSkillOverTime, 
             <button
               onClick={() => handleSort('name')}
               className={`px-3 py-1 rounded text-sm ${
-                sortBy === 'name' 
-                  ? 'bg-blue-600 hover:bg-blue-500' 
+                sortBy === 'name'
+                  ? 'bg-blue-600 hover:bg-blue-500'
                   : 'bg-gray-600 hover:bg-gray-500'
               }`}
             >
               Name {sortBy === 'name' && (sortOrder === 'asc' ? '↑' : '↓')}
             </button>
           </div>
+
+          {/* Filter Button */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                playSound('buttonClick');
+                setShowFilterMenu(!showFilterMenu);
+              }}
+              className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-lg flex items-center"
+            >
+              <Filter size={18} className="mr-2" />
+              <span>Filters</span>
+              {(minGamesRelationship !== 3 || recencyMonths !== null || gameLengthFilter !== 'all' || playerCountFilter !== null) && (
+                <span className="ml-2 bg-blue-600 text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                  {(minGamesRelationship !== 3 ? 1 : 0) + (recencyMonths !== null ? 1 : 0) + (gameLengthFilter !== 'all' ? 1 : 0) + (playerCountFilter !== null ? 1 : 0)}
+                </span>
+              )}
+              {showFilterMenu ? (
+                <ChevronUp size={16} className="ml-2" />
+              ) : (
+                <ChevronDown size={16} className="ml-2" />
+              )}
+            </button>
+
+            {/* Filter Menu */}
+            {showFilterMenu && (
+              <div className="absolute right-0 top-full mt-1 z-10 bg-gray-800 border border-gray-600 rounded-lg shadow-lg p-4 w-72">
+                <h4 className="font-medium mb-3">Filter Options</h4>
+
+                {/* Time Period Filter */}
+                <div className="mb-4">
+                  <label className="block text-sm text-gray-400 mb-2">Time Period</label>
+                  <div className="space-y-2">
+                    <label className="flex items-center cursor-pointer">
+                      <input
+                        type="radio"
+                        name="playerTimePeriod"
+                        checked={recencyMonths === null}
+                        onChange={() => setRecencyMonths(null)}
+                        className="mr-2 accent-blue-500"
+                      />
+                      <span className="text-sm">All Time</span>
+                    </label>
+                    <label className="flex items-center cursor-pointer">
+                      <input
+                        type="radio"
+                        name="playerTimePeriod"
+                        checked={recencyMonths !== null}
+                        onChange={() => setRecencyMonths(recencyMonths || 6)}
+                        className="mr-2 accent-blue-500"
+                      />
+                      <span className="text-sm mr-2">Last</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="24"
+                        value={recencyMonths || 6}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value, 10);
+                          if (!isNaN(value) && value >= 1 && value <= 24) {
+                            setRecencyMonths(value);
+                          }
+                        }}
+                        disabled={recencyMonths === null}
+                        className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                      />
+                      <span className="text-sm ml-2">months</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* TrueSkill Recalculation Checkbox - only visible when period is selected */}
+                {recencyMonths !== null && (
+                  <div className="mb-4 p-3 bg-gray-700/50 rounded-lg">
+                    <label className="flex items-start cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={recalculateTrueSkill}
+                        onChange={(e) => setRecalculateTrueSkill(e.target.checked)}
+                        className="mr-2 mt-0.5 accent-blue-500"
+                      />
+                      <div>
+                        <span className="text-sm">Recalculate skill for period only</span>
+                        <p className="text-xs text-gray-500 mt-1">
+                          When checked, skill ratings are calculated using only matches in the selected period.
+                          Otherwise, current cumulative ratings are shown.
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                )}
+
+                {/* Game Length Filter */}
+                <div className="mb-4">
+                  <label className="block text-sm text-gray-400 mb-2">Game Length</label>
+                  <div className="space-y-2">
+                    {([['all', 'All'], ['quick', 'Short (Quick)'], ['long', 'Long']] as const).map(([value, label]) => (
+                      <label key={value} className="flex items-center cursor-pointer">
+                        <input
+                          type="radio"
+                          name="playerGameLengthFilter"
+                          checked={gameLengthFilter === value}
+                          onChange={() => setGameLengthFilter(value)}
+                          className="mr-2 accent-blue-500"
+                        />
+                        <span className="text-sm">{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Player Count Filter */}
+                <div className="mb-4">
+                  <label className="block text-sm text-gray-400 mb-1">Player Count</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        if (playerCountFilter === null) setPlayerCountFilter(10);
+                        else if (playerCountFilter > 4) setPlayerCountFilter(playerCountFilter - 1);
+                      }}
+                      disabled={playerCountFilter !== null && playerCountFilter <= 4}
+                      className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                    >
+                      −
+                    </button>
+                    <div className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-center font-medium">
+                      {playerCountFilter === null ? 'All' : playerCountFilter}
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (playerCountFilter === null) setPlayerCountFilter(4);
+                        else if (playerCountFilter < 10) setPlayerCountFilter(playerCountFilter + 1);
+                      }}
+                      disabled={playerCountFilter !== null && playerCountFilter >= 10}
+                      className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                    >
+                      +
+                    </button>
+                  </div>
+                  {playerCountFilter !== null && (
+                    <button
+                      onClick={() => setPlayerCountFilter(null)}
+                      className="text-xs text-blue-400 hover:text-blue-300 mt-1"
+                    >
+                      Reset to All
+                    </button>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    Total players in the match (both teams)
+                  </p>
+                </div>
+
+                {/* Min Games for Relationships */}
+                <div className="mb-4">
+                  <label className="block text-sm text-gray-400 mb-1">Min games for relationships</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setMinGamesRelationship(prev => Math.max(1, prev - 1))}
+                      disabled={minGamesRelationship <= 1}
+                      className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                    >
+                      −
+                    </button>
+                    <div className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-center font-medium">
+                      {minGamesRelationship}
+                    </div>
+                    <button
+                      onClick={() => setMinGamesRelationship(prev => Math.min(20, prev + 1))}
+                      disabled={minGamesRelationship >= 20}
+                      className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    For BFF/Nemesis calculations in player details
+                  </p>
+                </div>
+
+                {/* Reset Filters Button */}
+                <button
+                  onClick={() => {
+                    playSound('buttonClick');
+                    setMinGamesRelationship(3);
+                    setRecencyMonths(null);
+                    setRecalculateTrueSkill(false);
+                    setGameLengthFilter('all');
+                    setPlayerCountFilter(null);
+                    setShowFilterMenu(false);
+                  }}
+                  className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg"
+                >
+                  Reset Filters
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-      
+
       {searchTerm !== '' && (
         <div className="mb-4 p-4 bg-gray-700 rounded-lg screenshot-info">
           <h3 className="font-semibold mb-2">Search Results:</h3>
           <p className="text-sm">Showing players matching: "{searchTerm}"</p>
         </div>
       )}
-      
+
+      {/* Date Range Banner - shown when recency filter is active */}
+      {recencyMonths !== null && dateRange.startDate && dateRange.endDate && (
+        <div className="mb-4 p-3 bg-blue-900/30 border border-blue-700/50 rounded-lg flex items-center flex-wrap gap-2">
+          <Calendar size={18} className="text-blue-400 flex-shrink-0" />
+          <span className="text-sm text-blue-200">
+            Showing stats from{' '}
+            <span className="font-medium">{dateRange.startDate.toLocaleDateString()}</span>
+            {' '}to{' '}
+            <span className="font-medium">{dateRange.endDate.toLocaleDateString()}</span>
+            {' '}({recencyMonths} month{recencyMonths !== 1 ? 's' : ''})
+          </span>
+          {recalculateTrueSkill && (
+            <span className="text-xs bg-purple-600/50 text-purple-200 px-2 py-0.5 rounded">
+              Skill recalculated for period
+            </span>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex justify-center items-center h-64">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
@@ -733,7 +1151,89 @@ const PlayerStats: React.FC<PlayerStatsProps> = ({ onBack, onViewSkillOverTime, 
                           <span>Total: {player.totalGames}</span>
                         </div>
                       </div>
-                      
+
+                      {/* Win Streaks */}
+                      <div className="mb-4">
+                        <div className="text-sm text-gray-400 mb-2">Win Streaks</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="bg-gray-800 p-2 rounded">
+                            <div className="flex items-center text-orange-400 text-sm mb-1">
+                              <Flame size={14} className="mr-1" />
+                              <span>Current</span>
+                            </div>
+                            <div className="font-medium text-center">{player.currentStreak}</div>
+                          </div>
+                          <div className="bg-gray-800 p-2 rounded">
+                            <div className="flex items-center text-yellow-400 text-sm mb-1">
+                              <Trophy size={14} className="mr-1" />
+                              <span>Best</span>
+                            </div>
+                            <div className="font-medium text-center">{player.bestStreak}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Victory Type Distribution - Two Bars */}
+                      {(() => {
+                        const stats = player.victoryTypeStats;
+                        const totalGamesRecorded = stats.throne.total + stats.wave.total + stats.kills.total;
+                        const totalWinsRecorded = stats.throne.wins + stats.wave.wins + stats.kills.wins;
+
+                        if (totalGamesRecorded === 0) return null;
+
+                        const types = [
+                          { key: 'throne', label: 'Throne', Icon: Crown, bgColor: 'bg-yellow-500', data: stats.throne },
+                          { key: 'wave', label: 'Wave', Icon: Flag, bgColor: 'bg-blue-500', data: stats.wave },
+                          { key: 'kills', label: 'Kills', Icon: Skull, bgColor: 'bg-red-500', data: stats.kills }
+                        ];
+
+                        const renderBar = (
+                          getValue: (t: typeof types[0]) => number,
+                          total: number,
+                          label: string
+                        ) => {
+                          const filtered = types.filter(t => getValue(t) > 0);
+                          if (filtered.length === 0) return null;
+
+                          return (
+                            <div className="mb-2">
+                              <div className="text-xs text-gray-500 mb-1">{label}</div>
+                              <div className="flex h-6 rounded overflow-hidden bg-gray-800">
+                                {filtered.map(type => {
+                                  const value = getValue(type);
+                                  const percentage = (value / total) * 100;
+                                  const Icon = type.Icon;
+
+                                  return (
+                                    <div
+                                      key={type.key}
+                                      className={`${type.bgColor} h-full flex items-center justify-center gap-1 text-white text-xs font-medium`}
+                                      style={{ width: `${percentage}%` }}
+                                      title={`${type.label}: ${value} (${Math.round(percentage)}%)`}
+                                    >
+                                      <Icon size={12} />
+                                      {percentage >= 20 && <span>{value}</span>}
+                                      {percentage >= 35 && <span className="text-white/70">({Math.round(percentage)}%)</span>}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        };
+
+                        return (
+                          <div className="mb-4">
+                            <div className="flex justify-between items-center mb-2">
+                              <div className="text-sm text-gray-400">Victory Types</div>
+                              <div className="text-xs text-gray-500">{totalGamesRecorded} of {player.totalGames} games</div>
+                            </div>
+                            {renderBar(t => t.data.total, totalGamesRecorded, 'Games by Type')}
+                            {renderBar(t => t.data.wins, totalWinsRecorded, 'Wins by Type')}
+                          </div>
+                        );
+                      })()}
+
                       {player.hasCombatStats && (
                         <div className="grid grid-cols-3 gap-2 mb-4">
                           <div className="bg-gray-800 p-2 rounded">

@@ -3,10 +3,12 @@ import React, { useState, useEffect } from 'react';
 import { ChevronLeft, Search, Calendar, Filter, ChevronDown, ChevronUp, Trash2, Edit, Shield, Award, Swords, Skull, Users, Coins } from 'lucide-react';
 import { DBMatch, DBMatchPlayer} from '../../services/DatabaseService';
 import dbService from '../../services/DatabaseService';
-import { Team, GameLength } from '../../types';
+import { Team, GameLength, VictoryType } from '../../types';
 import { useSound } from '../../context/SoundContext';
 import EnhancedTooltip from '../common/EnhancedTooltip';
 import EditMatchModal from './EditMatchModal';
+import { useDataSource } from '../../hooks/useDataSource';
+import { getVictoryTypeDisplay } from '../common/VictoryTypeSelector';
 
 interface MatchHistoryProps {
   onBack: () => void;
@@ -19,25 +21,27 @@ interface MatchWithDetails extends DBMatch {
 
 const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
   const { playSound } = useSound();
+  const { isViewMode, isViewModeLoading, getAllMatches, getMatchPlayers, getPlayer } = useDataSource();
   const [matches, setMatches] = useState<MatchWithDetails[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [filterTeam, setFilterTeam] = useState<Team | 'all'>('all');
   const [filterGameLength, setFilterGameLength] = useState<GameLength | 'all'>('all');
+  const [filterVictoryType, setFilterVictoryType] = useState<VictoryType | 'all' | 'not-recorded'>('all');
   const [dateSort, setDateSort] = useState<'asc' | 'desc'>('desc');
   const [showFilterMenu, setShowFilterMenu] = useState<boolean>(false);
   const [deletingMatch, setDeletingMatch] = useState<string | null>(null);
-  
+
   // Edit match modal state
   const [editingMatchId, setEditingMatchId] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState<boolean>(false);
-  
+
   // Load match data function
   const loadMatches = async () => {
     setLoading(true);
     try {
-      // Get all matches from the database
-      const allMatches = await dbService.getAllMatches();
+      // Get all matches from the database (uses shared data in view mode)
+      const allMatches = await getAllMatches();
       
       // Sort by date (newest first by default)
       allMatches.sort((a, b) => {
@@ -49,19 +53,19 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
       // Get players for each match
       const matchesWithPlayers = await Promise.all(
         allMatches.map(async (match) => {
-          const matchPlayers = await dbService.getMatchPlayers(match.id);
-          
+          const matchPlayers = await getMatchPlayers(match.id);
+
           // Get player names
           const playersWithNames = await Promise.all(
             matchPlayers.map(async (matchPlayer) => {
-              const player = await dbService.getPlayer(matchPlayer.playerId);
+              const player = await getPlayer(matchPlayer.playerId);
               return {
                 ...matchPlayer,
                 playerName: player?.name || 'Unknown Player'
               };
             })
           );
-          
+
           return {
             ...match,
             players: playersWithNames,
@@ -69,7 +73,7 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
           };
         })
       );
-      
+
       setMatches(matchesWithPlayers);
     } catch (error) {
       console.error('Error loading match history:', error);
@@ -77,11 +81,13 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
       setLoading(false);
     }
   };
-  
-  // Load match data on component mount
+
+  // Load match data on component mount (wait for view mode to be determined)
   useEffect(() => {
+    // Don't load data while view mode is still being determined
+    if (isViewModeLoading) return;
     loadMatches();
-  }, []);
+  }, [isViewModeLoading, getAllMatches, getMatchPlayers, getPlayer]);
   
   // Handle back navigation with sound
   const handleBack = () => {
@@ -167,6 +173,7 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
     setSearchTerm('');
     setFilterTeam('all');
     setFilterGameLength('all');
+    setFilterVictoryType('all');
     setShowFilterMenu(false);
   };
   
@@ -210,7 +217,18 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
       if (filterGameLength !== 'all' && match.gameLength !== filterGameLength) {
         return false;
       }
-      
+
+      // Apply victory type filter
+      if (filterVictoryType !== 'all') {
+        if (filterVictoryType === 'not-recorded') {
+          if (match.victoryType !== undefined) {
+            return false;
+          }
+        } else if (match.victoryType !== filterVictoryType) {
+          return false;
+        }
+      }
+
       // Apply search filter (match player names)
       if (searchTerm) {
         const searchLower = searchTerm.toLowerCase();
@@ -274,9 +292,9 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
             >
               <Filter size={18} className="mr-2" />
               <span>Filters</span>
-              {(filterTeam !== 'all' || filterGameLength !== 'all') && (
+              {(filterTeam !== 'all' || filterGameLength !== 'all' || filterVictoryType !== 'all') && (
                 <span className="ml-2 bg-blue-600 text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                  {(filterTeam !== 'all' ? 1 : 0) + (filterGameLength !== 'all' ? 1 : 0)}
+                  {(filterTeam !== 'all' ? 1 : 0) + (filterGameLength !== 'all' ? 1 : 0) + (filterVictoryType !== 'all' ? 1 : 0)}
                 </span>
               )}
               {showFilterMenu ? (
@@ -318,7 +336,23 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
                     <option value={GameLength.Long}>Long</option>
                   </select>
                 </div>
-                
+
+                {/* Victory Type Filter */}
+                <div className="mb-4">
+                  <label className="block text-sm text-gray-400 mb-1">Victory Type</label>
+                  <select
+                    value={filterVictoryType}
+                    onChange={(e) => setFilterVictoryType(e.target.value as VictoryType | 'all' | 'not-recorded')}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg"
+                  >
+                    <option value="all">All Types</option>
+                    <option value="throne">Throne</option>
+                    <option value="wave">Wave</option>
+                    <option value="kills">Kills</option>
+                    <option value="not-recorded">Not Recorded</option>
+                  </select>
+                </div>
+
                 {/* Reset Filters Button */}
                 <button
                   onClick={resetFilters}
@@ -360,6 +394,20 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
                         <span className="font-bold">
                           {match.winningTeam === Team.Titans ? 'Titans Victory' : 'Atlanteans Victory'}
                         </span>
+                        {/* Victory Type Badge */}
+                        {match.victoryType && (() => {
+                          const victoryInfo = getVictoryTypeDisplay(match.victoryType);
+                          if (victoryInfo) {
+                            const Icon = victoryInfo.icon;
+                            return (
+                              <span className={`ml-3 flex items-center text-sm ${victoryInfo.color}`} title={victoryInfo.description}>
+                                <Icon size={14} className="mr-1" />
+                                {victoryInfo.label}
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
                       <div className="text-sm text-gray-300 mt-1">
                         {formatDate(match.date)}
@@ -520,38 +568,40 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
                         </div>
                       </div>
                       
-                      {/* Edit and Delete Buttons */}
-                      <div className="mt-4 flex justify-end space-x-2">
-                        <EnhancedTooltip text="Edit this match data">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEditMatch(match.id);
-                            }}
-                            className="px-3 py-1 bg-blue-700 hover:bg-blue-600 rounded-lg flex items-center"
-                          >
-                            <Edit size={16} className="mr-2" />
-                            <span>Edit Match</span>
-                          </button>
-                        </EnhancedTooltip>
-                        
-                        <EnhancedTooltip text="Delete this match and its data">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteMatch(match.id);
-                            }}
-                            className={`px-3 py-1 rounded-lg flex items-center ${
-                              deletingMatch === match.id 
-                                ? 'bg-red-500 hover:bg-red-400'
-                                : 'bg-red-700 hover:bg-red-600'
-                            }`}
-                          >
-                            <Trash2 size={16} className="mr-2" />
-                            <span>{deletingMatch === match.id ? 'Confirm Delete' : 'Delete Match'}</span>
-                          </button>
-                        </EnhancedTooltip>
-                      </div>
+                      {/* Edit and Delete Buttons - hidden in view mode */}
+                      {!isViewMode && (
+                        <div className="mt-4 flex justify-end space-x-2">
+                          <EnhancedTooltip text="Edit this match data">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEditMatch(match.id);
+                              }}
+                              className="px-3 py-1 bg-blue-700 hover:bg-blue-600 rounded-lg flex items-center"
+                            >
+                              <Edit size={16} className="mr-2" />
+                              <span>Edit Match</span>
+                            </button>
+                          </EnhancedTooltip>
+
+                          <EnhancedTooltip text="Delete this match and its data">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteMatch(match.id);
+                              }}
+                              className={`px-3 py-1 rounded-lg flex items-center ${
+                                deletingMatch === match.id
+                                  ? 'bg-red-500 hover:bg-red-400'
+                                  : 'bg-red-700 hover:bg-red-600'
+                              }`}
+                            >
+                              <Trash2 size={16} className="mr-2" />
+                              <span>{deletingMatch === match.id ? 'Confirm Delete' : 'Delete Match'}</span>
+                            </button>
+                          </EnhancedTooltip>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -561,11 +611,11 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({ onBack }) => {
             <div className="flex flex-col items-center justify-center h-64 text-center">
               <Calendar size={48} className="text-gray-500 mb-4" />
               <p className="text-xl text-gray-400">
-                {searchTerm || filterTeam !== 'all' || filterGameLength !== 'all'
+                {searchTerm || filterTeam !== 'all' || filterGameLength !== 'all' || filterVictoryType !== 'all'
                   ? 'No matches found matching your filters'
                   : 'No match history available'}
               </p>
-              {(searchTerm || filterTeam !== 'all' || filterGameLength !== 'all') && (
+              {(searchTerm || filterTeam !== 'all' || filterGameLength !== 'all' || filterVictoryType !== 'all') && (
                 <button
                   onClick={resetFilters}
                   className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg"

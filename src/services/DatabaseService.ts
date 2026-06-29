@@ -1,7 +1,9 @@
 // src/services/DatabaseService.ts
-import { Team, GameLength } from '../types';
+import { Team, GameLength, VictoryType } from '../types';
 import { rating, rate, ordinal } from 'openskill';
 import NormalDistribution from 'normal-distribution';
+import { CloudSyncService } from './supabase/CloudSyncService';
+import { filterMatches } from '../shared/utils/matchFilters';
 
 // Database configuration
 const DB_NAME = 'GuardsOfAtlantisStats';
@@ -49,6 +51,7 @@ export interface DBMatch {
   titanPlayers: number;
   atlanteanPlayers: number;
   deviceId?: string;
+  victoryType?: VictoryType; // Optional for backward compatibility with legacy matches
 }
 
 // MatchPlayer database model
@@ -268,6 +271,33 @@ class DatabaseService {
   }
 
   /**
+   * Create a new player with default ratings
+   */
+  async createPlayer(name: string): Promise<DBPlayer> {
+    if (!this.db) await this.initialize();
+    if (!this.db) throw new Error('Database not initialized');
+
+    const defaultRating = rating();
+    const newPlayer: DBPlayer = {
+      id: name,
+      name: name,
+      totalGames: 0,
+      wins: 0,
+      losses: 0,
+      elo: INITIAL_ELO,
+      mu: defaultRating.mu,
+      sigma: defaultRating.sigma,
+      ordinal: ordinal(defaultRating),
+      lastPlayed: new Date(),
+      dateCreated: new Date(),
+      deviceId: this.getDeviceId(),
+      level: 1,
+    };
+    await this.savePlayer(newPlayer);
+    return newPlayer;
+  }
+
+  /**
    * Get all players
    */
   async getAllPlayers(): Promise<DBPlayer[]> {
@@ -291,11 +321,29 @@ class DatabaseService {
 
   /**
    * Get hero statistics based on match history
+   * @param minGamesForRelationships - Minimum games required to show relationship stats (default: 1)
+   * @param startDate - Optional start date for filtering matches (inclusive)
+   * @param endDate - Optional end date for filtering matches (inclusive)
    */
-  async getHeroStats(): Promise<any[]> {
+  async getHeroStats(
+    minGamesForRelationships: number = 1,
+    startDate?: Date,
+    endDate?: Date,
+    gameLengthFilter?: 'all' | 'quick' | 'long',
+    playerCountFilter?: number | null
+  ): Promise<any[]> {
     try {
-      const allMatchPlayers = await this.getAllMatchPlayers();
-      const allMatches = await this.getAllMatches();
+      const allMatchPlayersRaw = await this.getAllMatchPlayers();
+      let allMatches = filterMatches(await this.getAllMatches(), {
+        startDate, endDate, gameLengthFilter, playerCountFilter
+      });
+
+      // Create a set of valid match IDs for filtering match players
+      const validMatchIds = new Set(allMatches.map(m => m.id));
+
+      // Filter match players to only include those from valid matches
+      const allMatchPlayers = allMatchPlayersRaw.filter(mp => validMatchIds.has(mp.matchId));
+
       const matchesMap = new Map(allMatches.map(m => [m.id, m]));
       
       const heroMap = new Map<number, {
@@ -310,6 +358,11 @@ class DatabaseService {
         losses: number;
         teammates: Map<number, { wins: number; games: number }>;
         opponents: Map<number, { wins: number; games: number }>;
+        victoryTypeStats: {
+          throne: { wins: number; total: number };
+          wave: { wins: number; total: number };
+          kills: { wins: number; total: number };
+        };
       }>();
       
       // First pass: create the hero records
@@ -330,22 +383,36 @@ class DatabaseService {
             wins: 0,
             losses: 0,
             teammates: new Map(),
-            opponents: new Map()
+            opponents: new Map(),
+            victoryTypeStats: {
+              throne: { wins: 0, total: 0 },
+              wave: { wins: 0, total: 0 },
+              kills: { wins: 0, total: 0 }
+            }
           });
         }
         
         const heroRecord = heroMap.get(heroId)!;
         heroRecord.totalGames += 1;
-        
+
         const match = matchesMap.get(matchPlayer.matchId);
         if (!match) continue;
-        
+
         const won = matchPlayer.team === match.winningTeam;
-        
+
         if (won) {
           heroRecord.wins += 1;
         } else {
           heroRecord.losses += 1;
+        }
+
+        // Track victory type stats
+        const victoryType = match.victoryType as 'throne' | 'wave' | 'kills' | undefined;
+        if (victoryType && heroRecord.victoryTypeStats[victoryType]) {
+          heroRecord.victoryTypeStats[victoryType].total += 1;
+          if (won) {
+            heroRecord.victoryTypeStats[victoryType].wins += 1;
+          }
         }
       }
       
@@ -408,7 +475,7 @@ class DatabaseService {
         const winRate = hero.totalGames > 0 ? (hero.wins / hero.totalGames) * 100 : 0;
         
         const bestTeammates = Array.from(hero.teammates.entries())
-          .filter(([_, stats]) => stats.games >= 1)
+          .filter(([_, stats]) => stats.games >= minGamesForRelationships)
           .map(([teammateId, stats]) => {
             const teammateHero = heroMap.get(teammateId);
             if (!teammateHero) return null;
@@ -426,7 +493,7 @@ class DatabaseService {
           .slice(0, 3);
         
         const bestAgainst = Array.from(hero.opponents.entries())
-          .filter(([_, stats]) => stats.games >= 1)
+          .filter(([_, stats]) => stats.games >= minGamesForRelationships)
           .map(([opponentId, stats]) => {
             const opponentHero = heroMap.get(opponentId);
             if (!opponentHero) return null;
@@ -444,7 +511,7 @@ class DatabaseService {
           .slice(0, 3);
         
         const worstAgainst = Array.from(hero.opponents.entries())
-          .filter(([_, stats]) => stats.games >= 1)
+          .filter(([_, stats]) => stats.games >= minGamesForRelationships)
           .map(([opponentId, stats]) => {
             const opponentHero = heroMap.get(opponentId);
             if (!opponentHero) return null;
@@ -491,6 +558,499 @@ class DatabaseService {
     } catch (error) {
       console.error('Error getting hero stats:', error);
       return [];
+    }
+  }
+
+  /**
+   * Get hero win rate over time for charting
+   * Returns cumulative win rate at each date where matches occurred
+   * @param heroIds - Optional array of hero IDs to filter (if empty/undefined, return all)
+   * @param minGames - Minimum games before a hero appears (default: 3)
+   * @param startDate - Optional start date filter
+   * @param endDate - Optional end date filter
+   */
+  async getHeroWinRateOverTime(
+    heroIds?: number[],
+    minGames: number = 3,
+    startDate?: Date,
+    endDate?: Date,
+    gameLengthFilter?: 'all' | 'quick' | 'long',
+    playerCountFilter?: number | null
+  ): Promise<{
+    heroes: Array<{
+      heroId: number;
+      heroName: string;
+      icon: string;
+      totalGames: number;
+      currentWinRate: number;
+      dataPoints: Array<{
+        date: string;
+        gamesPlayedTotal: number;
+        winsTotal: number;
+        winRate: number;
+        gamesPlayedOnDate: number;
+      }>;
+    }>;
+    dateRange: { firstMatch: string; lastMatch: string } | null;
+  }> {
+    try {
+      const allMatchPlayersRaw = await this.getAllMatchPlayers();
+      let allMatches = filterMatches(await this.getAllMatches(), {
+        startDate, endDate, gameLengthFilter, playerCountFilter
+      });
+
+      // Sort matches by date chronologically
+      allMatches.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      if (allMatches.length === 0) {
+        return { heroes: [], dateRange: null };
+      }
+
+      // Create a set of valid match IDs for filtering
+      const validMatchIds = new Set(allMatches.map(m => m.id));
+      const allMatchPlayers = allMatchPlayersRaw.filter(mp => validMatchIds.has(mp.matchId));
+      const matchesMap = new Map(allMatches.map(m => [m.id, m]));
+
+      // Build hero tracking data structure
+      // Key: heroId, Value: { heroName, icon, matches: [{date, won}] }
+      const heroTracking = new Map<number, {
+        heroName: string;
+        icon: string;
+        matches: Array<{ date: string; won: boolean }>;
+      }>();
+
+      // Process each match player to build match history per hero
+      for (const matchPlayer of allMatchPlayers) {
+        const heroId = matchPlayer.heroId;
+        if (heroId === undefined || heroId === null) continue;
+
+        // Skip if filtering by heroIds and this hero is not in the list
+        if (heroIds && heroIds.length > 0 && !heroIds.includes(heroId)) continue;
+
+        const match = matchesMap.get(matchPlayer.matchId);
+        if (!match) continue;
+
+        if (!heroTracking.has(heroId)) {
+          heroTracking.set(heroId, {
+            heroName: matchPlayer.heroName,
+            icon: `heroes/${matchPlayer.heroName.toLowerCase().replace(/\s+/g, '')}.png`,
+            matches: []
+          });
+        }
+
+        const heroData = heroTracking.get(heroId)!;
+        const matchDate = new Date(match.date).toISOString().split('T')[0]; // YYYY-MM-DD
+        const won = matchPlayer.team === match.winningTeam;
+
+        heroData.matches.push({ date: matchDate, won });
+      }
+
+      // Now convert to time series data with cumulative stats
+      const heroResults: Array<{
+        heroId: number;
+        heroName: string;
+        icon: string;
+        totalGames: number;
+        currentWinRate: number;
+        dataPoints: Array<{
+          date: string;
+          gamesPlayedTotal: number;
+          winsTotal: number;
+          winRate: number;
+          gamesPlayedOnDate: number;
+        }>;
+      }> = [];
+
+      for (const [heroId, heroData] of heroTracking.entries()) {
+        // Sort matches by date
+        heroData.matches.sort((a, b) => a.date.localeCompare(b.date));
+
+        // Group by date and calculate cumulative stats
+        const dateGroups = new Map<string, { wins: number; games: number }>();
+        for (const match of heroData.matches) {
+          if (!dateGroups.has(match.date)) {
+            dateGroups.set(match.date, { wins: 0, games: 0 });
+          }
+          const group = dateGroups.get(match.date)!;
+          group.games++;
+          if (match.won) group.wins++;
+        }
+
+        // Build cumulative data points
+        const dataPoints: Array<{
+          date: string;
+          gamesPlayedTotal: number;
+          winsTotal: number;
+          winRate: number;
+          gamesPlayedOnDate: number;
+        }> = [];
+
+        let cumulativeGames = 0;
+        let cumulativeWins = 0;
+
+        // Sort dates and process chronologically
+        const sortedDates = Array.from(dateGroups.keys()).sort();
+        for (const date of sortedDates) {
+          const dayStats = dateGroups.get(date)!;
+          cumulativeGames += dayStats.games;
+          cumulativeWins += dayStats.wins;
+
+          dataPoints.push({
+            date,
+            gamesPlayedTotal: cumulativeGames,
+            winsTotal: cumulativeWins,
+            winRate: cumulativeGames > 0 ? (cumulativeWins / cumulativeGames) * 100 : 0,
+            gamesPlayedOnDate: dayStats.games
+          });
+        }
+
+        // Filter data points to only show from minGames onwards
+        const filteredDataPoints = dataPoints.filter(dp => dp.gamesPlayedTotal >= minGames);
+
+        // Only include heroes that have data points meeting the threshold
+        if (filteredDataPoints.length > 0) {
+          heroResults.push({
+            heroId,
+            heroName: heroData.heroName,
+            icon: heroData.icon,
+            totalGames: cumulativeGames,
+            currentWinRate: cumulativeGames > 0 ? (cumulativeWins / cumulativeGames) * 100 : 0,
+            dataPoints: filteredDataPoints
+          });
+        }
+      }
+
+      // Sort heroes by total games descending
+      heroResults.sort((a, b) => b.totalGames - a.totalGames);
+
+      // Try to enrich with icon data from heroes.ts
+      try {
+        const { heroes } = await import('../data/heroes');
+        for (const heroResult of heroResults) {
+          const heroData = heroes.find(h => h.name === heroResult.heroName);
+          if (heroData) {
+            heroResult.icon = heroData.icon;
+          }
+        }
+      } catch (error) {
+        console.error('Error enriching hero icons:', error);
+      }
+
+      // Calculate overall date range
+      const allDates = heroResults.flatMap(h => h.dataPoints.map(dp => dp.date));
+      const dateRange = allDates.length > 0
+        ? {
+            firstMatch: allDates.reduce((min, d) => d < min ? d : min),
+            lastMatch: allDates.reduce((max, d) => d > max ? d : max)
+          }
+        : null;
+
+      return { heroes: heroResults, dateRange };
+    } catch (error) {
+      console.error('Error getting hero win rate over time:', error);
+      return { heroes: [], dateRange: null };
+    }
+  }
+
+  /**
+   * Get all player statistics filtered by date range
+   * @param startDate - Optional start date for filtering matches (inclusive)
+   * @param endDate - Optional end date for filtering matches (inclusive)
+   * @param recalculateTrueSkill - If true, recalculate TrueSkill using only matches in the period
+   */
+  async getFilteredPlayerStats(
+    startDate?: Date,
+    endDate?: Date,
+    recalculateTrueSkill: boolean = false
+  ): Promise<{
+    players: Array<{
+      id: string;
+      name: string;
+      gamesPlayed: number;
+      wins: number;
+      losses: number;
+      winRate: number;
+      kills: number;
+      deaths: number;
+      assists: number;
+      kdRatio: number;
+      totalGold: number;
+      totalMinionKills: number;
+      averageGold: number;
+      averageMinionKills: number;
+      hasCombatStats: boolean;
+      favoriteHeroes: { heroId: number; heroName: string; count: number }[];
+      favoriteRoles: { role: string; count: number }[];
+      displayRating: number;
+      lastPlayed: Date | null;
+    }>;
+    dateRange: { start: Date; end: Date } | null;
+  }> {
+    try {
+      const allPlayers = await this.getAllPlayers();
+      let allMatches = await this.getAllMatches();
+      const allMatchPlayersRaw = await this.getAllMatchPlayers();
+
+      // Determine date range
+      let dateRange: { start: Date; end: Date } | null = null;
+      if (startDate || endDate) {
+        dateRange = {
+          start: startDate || new Date(0),
+          end: endDate || new Date()
+        };
+      }
+
+      // Filter matches by date range if specified
+      if (startDate || endDate) {
+        allMatches = allMatches.filter(match => {
+          const matchDate = new Date(match.date);
+          if (startDate && matchDate < startDate) return false;
+          if (endDate && matchDate > endDate) return false;
+          return true;
+        });
+      }
+
+      // Create a set of valid match IDs
+      const validMatchIds = new Set(allMatches.map(m => m.id));
+
+      // Filter match players to only include those from valid matches
+      const filteredMatchPlayers = allMatchPlayersRaw.filter(mp => validMatchIds.has(mp.matchId));
+
+      // Create matches map for quick lookup
+      const matchesMap = new Map(allMatches.map(m => [m.id, m]));
+
+      // Get current TrueSkill ratings (cumulative)
+      let trueSkillRatings: Record<string, number> = {};
+      if (!recalculateTrueSkill) {
+        trueSkillRatings = await this.getCurrentTrueSkillRatings();
+      } else {
+        // Recalculate TrueSkill using only filtered matches
+        trueSkillRatings = await this.calculateTrueSkillForMatches(allMatches);
+      }
+
+      // Calculate stats for each player
+      const playerStatsArray: Array<{
+        id: string;
+        name: string;
+        gamesPlayed: number;
+        wins: number;
+        losses: number;
+        winRate: number;
+        kills: number;
+        deaths: number;
+        assists: number;
+        kdRatio: number;
+        totalGold: number;
+        totalMinionKills: number;
+        averageGold: number;
+        averageMinionKills: number;
+        hasCombatStats: boolean;
+        favoriteHeroes: { heroId: number; heroName: string; count: number }[];
+        favoriteRoles: { role: string; count: number }[];
+        displayRating: number;
+        lastPlayed: Date | null;
+      }> = [];
+
+      for (const player of allPlayers) {
+        // Get this player's match records from filtered data
+        const playerMatches = filteredMatchPlayers.filter(mp => mp.playerId === player.id);
+
+        // Skip players with no games in the period
+        if (playerMatches.length === 0) continue;
+
+        // Calculate wins and losses
+        let wins = 0;
+        let losses = 0;
+        let kills = 0;
+        let deaths = 0;
+        let assists = 0;
+        let totalGold = 0;
+        let totalMinionKills = 0;
+        let hasCombatStats = false;
+        let lastPlayedDate: Date | null = null;
+
+        const heroCount = new Map<number, { heroId: number; heroName: string; count: number }>();
+        const roleCount = new Map<string, number>();
+
+        for (const mp of playerMatches) {
+          const match = matchesMap.get(mp.matchId);
+          if (!match) continue;
+
+          // Track last played
+          const matchDate = new Date(match.date);
+          if (!lastPlayedDate || matchDate > lastPlayedDate) {
+            lastPlayedDate = matchDate;
+          }
+
+          // Win/Loss
+          if (mp.team === match.winningTeam) {
+            wins++;
+          } else {
+            losses++;
+          }
+
+          // Combat stats
+          if (mp.kills !== undefined) {
+            kills += mp.kills;
+            hasCombatStats = true;
+          }
+          if (mp.deaths !== undefined) {
+            deaths += mp.deaths;
+          }
+          if (mp.assists !== undefined) {
+            assists += mp.assists;
+          }
+          if (mp.goldEarned !== undefined) {
+            totalGold += mp.goldEarned;
+          }
+          if (mp.minionKills !== undefined) {
+            totalMinionKills += mp.minionKills;
+          }
+
+          // Favorite heroes
+          if (mp.heroId !== undefined) {
+            const existing = heroCount.get(mp.heroId);
+            if (existing) {
+              existing.count++;
+            } else {
+              heroCount.set(mp.heroId, { heroId: mp.heroId, heroName: mp.heroName, count: 1 });
+            }
+          }
+
+          // Favorite roles
+          if (mp.heroRoles) {
+            for (const role of mp.heroRoles) {
+              roleCount.set(role, (roleCount.get(role) || 0) + 1);
+            }
+          }
+        }
+
+        const gamesPlayed = playerMatches.length;
+        const winRate = gamesPlayed > 0 ? (wins / gamesPlayed) * 100 : 0;
+        const kdRatio = deaths > 0 ? kills / deaths : kills;
+
+        // Sort favorite heroes and roles
+        const favoriteHeroes = Array.from(heroCount.values())
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 3);
+
+        const favoriteRoles = Array.from(roleCount.entries())
+          .map(([role, count]) => ({ role, count }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 3);
+
+        playerStatsArray.push({
+          id: player.id,
+          name: player.name,
+          gamesPlayed,
+          wins,
+          losses,
+          winRate,
+          kills,
+          deaths,
+          assists,
+          kdRatio,
+          totalGold,
+          totalMinionKills,
+          averageGold: gamesPlayed > 0 ? totalGold / gamesPlayed : 0,
+          averageMinionKills: gamesPlayed > 0 ? totalMinionKills / gamesPlayed : 0,
+          hasCombatStats,
+          favoriteHeroes,
+          favoriteRoles,
+          displayRating: trueSkillRatings[player.id] || 1200,
+          lastPlayed: lastPlayedDate
+        });
+      }
+
+      return { players: playerStatsArray, dateRange };
+    } catch (error) {
+      console.error('Error getting filtered player stats:', error);
+      return { players: [], dateRange: null };
+    }
+  }
+
+  /**
+   * Calculate TrueSkill ratings using only the provided matches
+   * @param matches - Array of matches to use for calculation
+   */
+  private async calculateTrueSkillForMatches(matches: DBMatch[]): Promise<Record<string, number>> {
+    try {
+      // Sort matches by date
+      const sortedMatches = [...matches].sort((a, b) => {
+        const dateA = new Date(a.date).getTime();
+        const dateB = new Date(b.date).getTime();
+        return dateA - dateB;
+      });
+
+      // Initialize all players with default rating
+      const players = await this.getAllPlayers();
+      const playerRatings: { [playerId: string]: any } = {};
+
+      for (const player of players) {
+        playerRatings[player.id] = rating();
+      }
+
+      // Process each match
+      for (const match of sortedMatches) {
+        const matchPlayers = await this.getMatchPlayers(match.id);
+
+        // Separate into teams
+        const titanPlayers: string[] = [];
+        const titanRatings: any[] = [];
+        const atlanteanPlayers: string[] = [];
+        const atlanteanRatings: any[] = [];
+
+        for (const mp of matchPlayers) {
+          if (mp.team === Team.Titans) {
+            titanPlayers.push(mp.playerId);
+            titanRatings.push(playerRatings[mp.playerId] || rating());
+          } else {
+            atlanteanPlayers.push(mp.playerId);
+            atlanteanRatings.push(playerRatings[mp.playerId] || rating());
+          }
+        }
+
+        // Skip if either team is empty
+        if (titanRatings.length === 0 || atlanteanRatings.length === 0) {
+          continue;
+        }
+
+        // Determine ranks
+        let ranks: number[];
+        if (match.winningTeam === Team.Titans) {
+          ranks = [1, 2];
+        } else {
+          ranks = [2, 1];
+        }
+
+        // Update ratings
+        const result = rate([titanRatings, atlanteanRatings], {
+          rank: ranks,
+          beta: TRUESKILL_BETA,
+          tau: TRUESKILL_TAU
+        });
+
+        // Store updated ratings
+        for (let i = 0; i < titanPlayers.length; i++) {
+          playerRatings[titanPlayers[i]] = result[0][i];
+        }
+        for (let i = 0; i < atlanteanPlayers.length; i++) {
+          playerRatings[atlanteanPlayers[i]] = result[1][i];
+        }
+      }
+
+      // Convert to display ratings
+      const displayRatings: Record<string, number> = {};
+      for (const playerId in playerRatings) {
+        const playerRating = playerRatings[playerId];
+        const ordinalValue = ordinal(playerRating);
+        displayRatings[playerId] = Math.round((ordinalValue + 25) * 40 + 200);
+      }
+
+      return displayRatings;
+    } catch (error) {
+      console.error('Error calculating TrueSkill for matches:', error);
+      return {};
     }
   }
 
@@ -591,7 +1151,8 @@ class DatabaseService {
   }
 
   /**
-   * Delete a match and its associated player records
+   * Delete a match and its associated player records.
+   * Also triggers cloud deletion to sync tombstone across devices.
    */
   async deleteMatch(matchId: string): Promise<void> {
     if (!this.db) await this.initialize();
@@ -604,11 +1165,16 @@ class DatabaseService {
       }
 
       const matchPlayers = await this.getMatchPlayers(matchId);
-      
+
       await this.deleteMatchAndPlayers(matchId, matchPlayers);
-      
+
       await this.recalculatePlayerStats();
-      
+
+      // Trigger cloud deletion (non-blocking) to create tombstone
+      CloudSyncService.deleteMatchFromCloud(matchId).catch(error => {
+        console.error('[DatabaseService] Cloud deletion failed:', error);
+      });
+
     } catch (error) {
       console.error('Error deleting match:', error);
       throw error;
@@ -644,6 +1210,29 @@ class DatabaseService {
   }
 
   /**
+   * Delete a match and its player records without triggering cloud deletion.
+   * Used when applying tombstones from cloud sync.
+   */
+  async deleteMatchAndPlayersOnly(matchId: string): Promise<boolean> {
+    if (!this.db) await this.initialize();
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const match = await this.getMatch(matchId);
+      if (!match) {
+        return false; // Match doesn't exist locally
+      }
+
+      const matchPlayers = await this.getMatchPlayers(matchId);
+      await this.deleteMatchAndPlayers(matchId, matchPlayers);
+      return true;
+    } catch (error) {
+      console.error('Error deleting match locally:', error);
+      return false;
+    }
+  }
+
+  /**
    * Initialize TrueSkill ratings for all players
    */
   private initializeTrueSkillRatings(players: DBPlayer[]): void {
@@ -665,7 +1254,7 @@ class DatabaseService {
   /**
    * Recalculate all player statistics based on current match history using TrueSkill
    */
-  private async recalculatePlayerStats(): Promise<void> {
+  public async recalculatePlayerStats(): Promise<void> {
     try {
       console.log("Starting player statistics recalculation with TrueSkill...");
       
@@ -900,6 +1489,7 @@ class DatabaseService {
       winningTeam: Team;
       gameLength: GameLength;
       doubleLanes: boolean;
+      victoryType?: VictoryType;
     },
     playerData: {
       id: string;
@@ -999,7 +1589,8 @@ class DatabaseService {
       doubleLanes: matchData.doubleLanes,
       titanPlayers: titanPlayers.length,
       atlanteanPlayers: atlanteanPlayers.length,
-      deviceId: this.getDeviceId()
+      deviceId: this.getDeviceId(),
+      victoryType: matchData.victoryType
     };
     
     // Save the match
@@ -1076,8 +1667,23 @@ class DatabaseService {
     });
     
     await Promise.all(playerUpdatePromises);
-    
+
+    // Trigger auto-upload to cloud if enabled
+    CloudSyncService.triggerAutoUpload();
+
     return match.id;
+  }
+
+  /**
+   * Get hero play counts for a player (heroId → number of times played)
+   */
+  async getPlayerHeroCounts(playerId: string): Promise<Map<number, number>> {
+    const matches = await this.getPlayerMatches(playerId);
+    const counts = new Map<number, number>();
+    for (const match of matches) {
+      counts.set(match.heroId, (counts.get(match.heroId) || 0) + 1);
+    }
+    return counts;
   }
 
   /**
@@ -1635,6 +2241,7 @@ class DatabaseService {
     date: string;
     matchNumber: number;
     ratings: { [playerId: string]: number };
+    participants: string[];
   }>> {
     try {
       // Get all matches sorted by date
@@ -1653,14 +2260,31 @@ class DatabaseService {
       for (const player of players) {
         playerRatings[player.id] = rating();
       }
-      
+
       // Track rating history
       const ratingHistory: Array<{
         date: string;
         matchNumber: number;
         ratings: { [playerId: string]: number };
+        participants: string[];
       }> = [];
-      
+
+      // Add initial snapshot (game 0) - default ratings before any matches
+      const initialSnapshot: { [playerId: string]: number } = {};
+      for (const playerId in playerRatings) {
+        const playerRating = playerRatings[playerId];
+        const ordinalValue = ordinal(playerRating);
+        const displayRating = Math.round((ordinalValue + 25) * 40 + 200);
+        initialSnapshot[playerId] = displayRating;
+      }
+
+      ratingHistory.push({
+        date: allMatches.length > 0 ? allMatches[0].date.toString() : new Date().toISOString(),
+        matchNumber: 0,
+        ratings: initialSnapshot,
+        participants: []  // No participants for initial snapshot (game 0)
+      });
+
       // Process each match chronologically
       for (let matchIndex = 0; matchIndex < allMatches.length; matchIndex++) {
         const match = allMatches[matchIndex];
@@ -1722,7 +2346,8 @@ class DatabaseService {
         ratingHistory.push({
           date: match.date.toString(),
           matchNumber: matchIndex + 1,
-          ratings: snapshot
+          ratings: snapshot,
+          participants: matchPlayers.map(mp => mp.playerId)
         });
       }
       
@@ -2163,6 +2788,245 @@ class DatabaseService {
     } catch (error) {
       console.error(`Error checking if match ${matchId} can be edited:`, error);
       return { canEdit: false, reason: 'Error checking match editability' };
+    }
+  }
+
+  /**
+   * Get hero relationship network data for graph visualization
+   * Returns all four relationship types between selected heroes:
+   * - teammateWins: times on same team and won
+   * - teammateLosses: times on same team and lost
+   * - opponentWins: times beat this hero as opponent
+   * - opponentLosses: times lost to this hero as opponent
+   */
+  async getHeroRelationshipNetwork(
+    heroIds: number[],
+    minGames: number = 1,
+    startDate?: Date,
+    endDate?: Date,
+    gameLengthFilter?: 'all' | 'quick' | 'long',
+    playerCountFilter?: number | null
+  ): Promise<{
+    heroId: number;
+    relatedHeroId: number;
+    teammateWins: number;
+    teammateLosses: number;
+    opponentWins: number;
+    opponentLosses: number;
+  }[]> {
+    try {
+      const allMatchPlayersRaw = await this.getAllMatchPlayers();
+      const allMatches = filterMatches(await this.getAllMatches(), {
+        startDate, endDate, gameLengthFilter, playerCountFilter
+      });
+
+      if (allMatches.length === 0) {
+        return [];
+      }
+
+      // Create a set of valid match IDs for filtering
+      const validMatchIds = new Set(allMatches.map(m => m.id));
+      const allMatchPlayers = allMatchPlayersRaw.filter(mp => validMatchIds.has(mp.matchId));
+
+      // Create a set of selected hero IDs for filtering
+      const selectedHeroIds = new Set(heroIds);
+
+      // Track relationships: key is "heroId-relatedHeroId"
+      const relationshipMap = new Map<string, {
+        heroId: number;
+        relatedHeroId: number;
+        teammateWins: number;
+        teammateLosses: number;
+        opponentWins: number;
+        opponentLosses: number;
+      }>();
+
+      // Process each match
+      for (const match of allMatches) {
+        const matchHeroes = allMatchPlayers.filter(mp => mp.matchId === match.id);
+
+        // For each hero in the match
+        for (const hero1 of matchHeroes) {
+          if (hero1.heroId === undefined || hero1.heroId === null) continue;
+          if (!selectedHeroIds.has(hero1.heroId)) continue;
+
+          const hero1Won = hero1.team === match.winningTeam;
+
+          // Compare with every other hero in the match
+          for (const hero2 of matchHeroes) {
+            if (hero2.heroId === undefined || hero2.heroId === null) continue;
+            if (hero1.heroId === hero2.heroId) continue;
+            if (!selectedHeroIds.has(hero2.heroId)) continue;
+
+            const key = `${hero1.heroId}-${hero2.heroId}`;
+
+            if (!relationshipMap.has(key)) {
+              relationshipMap.set(key, {
+                heroId: hero1.heroId,
+                relatedHeroId: hero2.heroId,
+                teammateWins: 0,
+                teammateLosses: 0,
+                opponentWins: 0,
+                opponentLosses: 0
+              });
+            }
+
+            const rel = relationshipMap.get(key)!;
+            const sameTeam = hero1.team === hero2.team;
+
+            if (sameTeam) {
+              // Teammates
+              if (hero1Won) {
+                rel.teammateWins++;
+              } else {
+                rel.teammateLosses++;
+              }
+            } else {
+              // Opponents
+              if (hero1Won) {
+                rel.opponentWins++;  // hero1 beat hero2
+              } else {
+                rel.opponentLosses++; // hero1 lost to hero2
+              }
+            }
+          }
+        }
+      }
+
+      // Filter by minGames and convert to array
+      const relationships = Array.from(relationshipMap.values()).filter(rel => {
+        const totalGames = rel.teammateWins + rel.teammateLosses + rel.opponentWins + rel.opponentLosses;
+        return totalGames >= minGames;
+      });
+
+      return relationships;
+    } catch (error) {
+      console.error('Error getting hero relationship network:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get player relationship network data for graph visualization
+   * Returns relationship data between selected players for network graph
+   */
+  async getPlayerRelationshipNetwork(
+    playerIds: string[],
+    minGames: number = 1,
+    startDate?: Date,
+    endDate?: Date
+  ): Promise<{
+    playerId: string;
+    relatedPlayerId: string;
+    relatedPlayerName: string;
+    teammateWins: number;
+    teammateLosses: number;
+    opponentWins: number;
+    opponentLosses: number;
+  }[]> {
+    try {
+      const allMatchPlayersRaw = await this.getAllMatchPlayers();
+      let allMatches = await this.getAllMatches();
+      const allPlayers = await this.getAllPlayers();
+
+      // Create a map for player name lookup
+      const playerNameMap = new Map(allPlayers.map(p => [p.id, p.name]));
+
+      // Filter matches by date range if specified
+      if (startDate || endDate) {
+        allMatches = allMatches.filter(match => {
+          const matchDate = new Date(match.date);
+          if (startDate && matchDate < startDate) return false;
+          if (endDate && matchDate > endDate) return false;
+          return true;
+        });
+      }
+
+      if (allMatches.length === 0) {
+        return [];
+      }
+
+      // Create a set of valid match IDs for filtering
+      const validMatchIds = new Set(allMatches.map(m => m.id));
+      const allMatchPlayers = allMatchPlayersRaw.filter(mp => validMatchIds.has(mp.matchId));
+
+      // Create a set of selected player IDs for filtering
+      const selectedPlayerIds = new Set(playerIds);
+
+      // Track relationships: key is "playerId-relatedPlayerId"
+      const relationshipMap = new Map<string, {
+        playerId: string;
+        relatedPlayerId: string;
+        relatedPlayerName: string;
+        teammateWins: number;
+        teammateLosses: number;
+        opponentWins: number;
+        opponentLosses: number;
+      }>();
+
+      // Process each match
+      for (const match of allMatches) {
+        const matchPlayerRecords = allMatchPlayers.filter(mp => mp.matchId === match.id);
+
+        // For each player in the match
+        for (const player1 of matchPlayerRecords) {
+          if (!player1.playerId) continue;
+          if (!selectedPlayerIds.has(player1.playerId)) continue;
+
+          const player1Won = player1.team === match.winningTeam;
+
+          // Compare with every other player in the match
+          for (const player2 of matchPlayerRecords) {
+            if (!player2.playerId) continue;
+            if (player1.playerId === player2.playerId) continue;
+            if (!selectedPlayerIds.has(player2.playerId)) continue;
+
+            const key = `${player1.playerId}-${player2.playerId}`;
+
+            if (!relationshipMap.has(key)) {
+              relationshipMap.set(key, {
+                playerId: player1.playerId,
+                relatedPlayerId: player2.playerId,
+                relatedPlayerName: playerNameMap.get(player2.playerId) || player2.playerId,
+                teammateWins: 0,
+                teammateLosses: 0,
+                opponentWins: 0,
+                opponentLosses: 0
+              });
+            }
+
+            const rel = relationshipMap.get(key)!;
+            const sameTeam = player1.team === player2.team;
+
+            if (sameTeam) {
+              // Teammates
+              if (player1Won) {
+                rel.teammateWins++;
+              } else {
+                rel.teammateLosses++;
+              }
+            } else {
+              // Opponents
+              if (player1Won) {
+                rel.opponentWins++;  // player1 beat player2
+              } else {
+                rel.opponentLosses++; // player1 lost to player2
+              }
+            }
+          }
+        }
+      }
+
+      // Filter by minGames and convert to array
+      const relationships = Array.from(relationshipMap.values()).filter(rel => {
+        const totalGames = rel.teammateWins + rel.teammateLosses + rel.opponentWins + rel.opponentLosses;
+        return totalGames >= minGames;
+      });
+
+      return relationships;
+    } catch (error) {
+      console.error('Error getting player relationship network:', error);
+      return [];
     }
   }
 }

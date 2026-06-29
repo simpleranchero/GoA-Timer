@@ -1,47 +1,72 @@
-import { useState, useEffect, useReducer, useRef } from 'react';
+import { useState, useEffect, useReducer, useRef, lazy, Suspense } from 'react';
 import './App.css';
 import GameSetup from './components/GameSetup';
 import GameTimer from './components/GameTimer';
 import SimpleGameTimer from './components/SimpleGameTimer';
-import DraftingSystem from './components/DraftingSystem';
-import CoinToss from './components/CoinToss';
-import DraftModeSelection from './components/DraftModeSelection';
 import CollapsibleFeedback from './components/common/CollapsibleFeedback';
 import SoundToggle from './components/common/SoundToggle';
+import FeatureAnnouncement from './components/common/FeatureAnnouncement';
 import AudioInitializer from './components/common/AudioInitializer';
-import VictoryScreen from './components/VictoryScreen';
 import ResumeGamePrompt from './components/common/ResumeGamePrompt';
 import { gameStorageService } from './services/GameStorageService';
 import migrationService from './services/MigrationService';
 import SimpleTimerService from './services/SimpleTimerService';
 import { SoundProvider, useSound } from './context/SoundContext';
-import { ConnectionProvider } from './context/ConnectionContext'; // Import ConnectionProvider
+import { ConnectionProvider } from './context/ConnectionContext';
+import { AuthProvider } from './context/AuthContext';
+import { ViewModeProvider, useViewMode } from './context/ViewModeContext';
+import { StatsFilterProvider } from './context/StatsFilterContext';
+import ViewModeBanner from './components/common/ViewModeBanner';
 import { PlayerRoundStats } from './components/EndOfRoundAssistant';
-import { 
-  Hero, 
-  GameState, 
-  Player, 
-  Team, 
-  GameLength, 
-  Lane, 
-  LaneState, 
+import {
+  Hero,
+  GameState,
+  Player,
+  Team,
+  GameLength,
+  Lane,
+  LaneState,
   DraftMode,
   DraftingState,
   PickBanStep,
   PlayerStats
 } from './types';
 import { getAllExpansions, filterHeroesByExpansions } from './data/heroes';
-import SkillOverTime from './components/matches/SkillOverTime';
-// Import match statistics components
-import MatchesMenu, { MatchesView } from './components/matches/MatchesMenu';
-import PlayerStatsScreen from './components/matches/PlayerStats';
-import DetailedPlayerStats from './components/matches/DetailedPlayerStats';
-import MatchHistory from './components/matches/MatchHistory';
-import MatchMaker from './components/matches/MatchMaker';
-import HeroStats from './components/matches/HeroStats';
-import RecordMatch from './components/matches/RecordMatch';
-import HeroInfo from './components/matches/HeroInfo';
+import { GlobalStatsService } from './services/supabase/GlobalStatsService';
+import type { MatchesView } from './components/matches/MatchesMenu';
 
+// Lazy-loaded: Tier 1 (secondary screens)
+const DraftingSystem = lazy(() => import('./components/DraftingSystem'));
+const CoinToss = lazy(() => import('./components/CoinToss'));
+const DraftModeSelection = lazy(() => import('./components/DraftModeSelection'));
+const VictoryScreen = lazy(() => import('./components/VictoryScreen'));
+const CloudSidebar = lazy(() => import('./components/cloud/CloudSidebar'));
+
+// Lazy-loaded: Tier 2 (per-view match statistics)
+const MatchesMenu = lazy(() => import('./components/matches/MatchesMenu'));
+const PlayerStatsScreen = lazy(() => import('./components/matches/PlayerStats'));
+const DetailedPlayerStats = lazy(() => import('./components/matches/DetailedPlayerStats'));
+const MatchHistory = lazy(() => import('./components/matches/MatchHistory'));
+const MatchMaker = lazy(() => import('./components/matches/MatchMaker'));
+const HeroStats = lazy(() => import('./components/matches/HeroStats'));
+const DetailedHeroStats = lazy(() => import('./components/matches/DetailedHeroStats'));
+const RecordMatch = lazy(() => import('./components/matches/RecordMatch'));
+const HeroInfo = lazy(() => import('./components/matches/HeroInfo'));
+const SkillOverTime = lazy(() => import('./components/matches/SkillOverTime'));
+
+
+// Loading fallbacks
+const FullScreenSpinner = () => (
+  <div className="flex items-center justify-center min-h-[200px]">
+    <div className="w-8 h-8 border-4 border-white/30 border-t-white rounded-full animate-spin" />
+  </div>
+);
+
+const ViewSpinner = () => (
+  <div className="flex items-center justify-center py-12">
+    <div className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
+  </div>
+);
 
 // Modified interface for lane state return type
 interface LaneStateResult {
@@ -405,6 +430,9 @@ function AppContent() {
   // Access sound functions
   const { playSound, unlockAudio, isAudioReady } = useSound();
 
+  // Access view mode state
+  const { isViewMode, isLoading: isViewModeLoading, error: viewModeError } = useViewMode();
+
   // Game setup state
   const [gameStarted, setGameStarted] = useState<boolean>(false);
   const [simpleTimerMode, setSimpleTimerMode] = useState<boolean>(false);
@@ -420,8 +448,22 @@ function AppContent() {
   // Players and heroes state
   const [localPlayers, setLocalPlayers] = useState<Player[]>([]);
   
-  // Expansion selection state
-  const [selectedExpansions, setSelectedExpansions] = useState<string[]>(getAllExpansions());
+  // Expansion selection state - load from localStorage or default to all expansions
+  const [selectedExpansions, setSelectedExpansions] = useState<string[]>(() => {
+    const saved = localStorage.getItem('goa-selected-expansions');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // Validate that it's an array of strings
+        if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) {
+          return parsed;
+        }
+      } catch {
+        // Invalid JSON, use default
+      }
+    }
+    return getAllExpansions();
+  });
   
   // Max complexity state
   const [maxComplexity, setMaxComplexity] = useState<number>(4); // Default to 4 (maximum)
@@ -455,7 +497,17 @@ function AppContent() {
   const [showMatchStatistics, setShowMatchStatistics] = useState<boolean>(false);
   const [currentMatchView, setCurrentMatchView] = useState<MatchesView>('menu');
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
-  
+  const [selectedHeroId, setSelectedHeroId] = useState<number | null>(null);
+  const [heroStatsMode, setHeroStatsMode] = useState<'local' | 'global'>('local');
+
+  // Auto-navigate to match statistics in view mode
+  useEffect(() => {
+    if (isViewMode && !showMatchStatistics) {
+      setShowMatchStatistics(true);
+      setCurrentMatchView('menu');
+    }
+  }, [isViewMode, showMatchStatistics]);
+
   // NEW: Save/resume game state
   const [showResumePrompt, setShowResumePrompt] = useState<boolean>(false);
   const [savedGameData, setSavedGameData] = useState<any>(null);
@@ -563,6 +615,23 @@ function AppContent() {
       initializeApp();
     }
   }, [gameStarted, isDraftingMode]);
+
+  // Pre-fetch global match data after initial render is complete
+  useEffect(() => {
+    const prefetch = () => GlobalStatsService.prefetchGlobalMatchData();
+    if ('requestIdleCallback' in window) {
+      const id = requestIdleCallback(prefetch);
+      return () => cancelIdleCallback(id);
+    } else {
+      const id = setTimeout(prefetch, 2000);
+      return () => clearTimeout(id);
+    }
+  }, []);
+
+  // Save selected expansions to localStorage when they change
+  useEffect(() => {
+    localStorage.setItem('goa-selected-expansions', JSON.stringify(selectedExpansions));
+  }, [selectedExpansions]);
 
   // Attempt to unlock audio on first user interaction
   useEffect(() => {
@@ -771,6 +840,8 @@ const addPlayer = (team: Team) => {
         return availableHeroCount >= playerCount + 2;
       case DraftMode.PickAndBan:
         return availableHeroCount >= playerCount * 2;
+      case DraftMode.Novel:
+        return availableHeroCount >= playerCount * 3;
       default:
         return false;
     }
@@ -851,7 +922,6 @@ const addPlayer = (team: Team) => {
 
   // Start a simple timer game using persisted simple-timer settings (or current values)
   const handleStartSimpleTimer = () => {
-    // Start the simple-timer screen (not the tracked game)
     playSound('buttonClick');
 
     const stored = SimpleTimerService.load();
@@ -863,7 +933,6 @@ const addPlayer = (team: Team) => {
     const soundWarning = typeof stored?.soundWarningEnabled === 'boolean' ? stored!.soundWarningEnabled : true;
     const soundComplete = typeof stored?.soundCompleteEnabled === 'boolean' ? stored!.soundCompleteEnabled : true;
 
-    // Apply selected timer settings to app-level state
     setStrategyTime(sTime);
     setMoveTime(mTime);
     setStrategyTimerEnabled(sEnabled);
@@ -872,23 +941,122 @@ const addPlayer = (team: Team) => {
     setSimpleSoundWarningEnabled(soundWarning);
     setSimpleSoundCompleteEnabled(soundComplete);
 
-    // Load level-up values as well
-    const luTime = typeof stored?.levelUpTime === 'number' ? stored!.levelUpTime : 120; // default 2:00
+    const luTime = typeof stored?.levelUpTime === 'number' ? stored!.levelUpTime : 120;
     setLevelUpTime(luTime);
     setLevelUpTimeRemaining(luTime);
     setLevelUpTimerActive(false);
 
-    // Set timer remaining and activate strategy timer for the simple mode
     setStrategyTimeRemaining(sTime);
     setMoveTimeRemaining(mTime);
     setStrategyTimerActive(false);
 
-    // Enter simple timer mode (a separate screen)
     setSimpleTimerMode(true);
   };
 
+  // Novel Draft: assign heroes one at a time, always picking for the most constrained player
+  const assignNovelHeroes = async (
+    players: Player[],
+    heroPool: Hero[]
+  ): Promise<{ playerId: number; heroOptions: Hero[] }[]> => {
+    type Slot = 'T1' | 'T2' | 'T3';
+    const slotComplexityRange: Record<Slot, [number, number]> = {
+      T1: [1, 2],
+      T2: [3, 4],
+      T3: [2, 4],
+    };
+
+    const { default: dbService } = await import('./services/DatabaseService');
+    const playerPlayCounts = new Map<number, Map<number, number>>();
+    await Promise.all(
+      players.map(async (p) => {
+        const counts = await dbService.getPlayerHeroCounts(p.name);
+        playerPlayCounts.set(p.id, counts);
+      })
+    );
+
+    const remainingPool = [...heroPool];
+    const assignments = new Map<number, Hero[]>();
+    const remainingSlots = new Map<number, Slot[]>();
+    for (const p of players) {
+      assignments.set(p.id, []);
+      remainingSlots.set(p.id, ['T1', 'T2', 'T3']);
+    }
+
+    const getPlayCount = (playerId: number, heroId: number): number =>
+      playerPlayCounts.get(playerId)?.get(heroId) || 0;
+
+    const totalNeeded = players.length * 3;
+    let assigned = 0;
+
+    while (assigned < totalNeeded && remainingPool.length > 0) {
+      const candidates = players.filter(p => assignments.get(p.id)!.length < 3);
+      if (candidates.length === 0) break;
+
+      let bestPlayer: Player | null = null;
+      let bestScore = Infinity;
+      let bestAssigned = Infinity;
+      for (const p of candidates) {
+        const score = remainingPool.filter(h => getPlayCount(p.id, h.id) === 0).length;
+        const numAssigned = assignments.get(p.id)!.length;
+        if (
+          score < bestScore ||
+          (score === bestScore && numAssigned < bestAssigned)
+        ) {
+          bestScore = score;
+          bestAssigned = numAssigned;
+          bestPlayer = p;
+        }
+      }
+      if (!bestPlayer) break;
+
+      const playerId = bestPlayer.id;
+      const slots = remainingSlots.get(playerId)!;
+
+      let picked: Hero | null = null;
+      let pickedSlotIdx = -1;
+
+      const sortedByNovelty = [...remainingPool].sort((a, b) => {
+        const diff = getPlayCount(playerId, a.id) - getPlayCount(playerId, b.id);
+        return diff !== 0 ? diff : Math.random() - 0.5;
+      });
+
+      for (const hero of sortedByNovelty) {
+        const slotIdx = slots.findIndex(slot => {
+          const [minC, maxC] = slotComplexityRange[slot];
+          return hero.complexity >= minC && hero.complexity <= maxC;
+        });
+        if (slotIdx !== -1) {
+          picked = hero;
+          pickedSlotIdx = slotIdx;
+          break;
+        }
+      }
+
+      if (!picked && sortedByNovelty.length > 0) {
+        picked = sortedByNovelty[0];
+        if (slots.length > 0) pickedSlotIdx = 0;
+      }
+
+      if (pickedSlotIdx !== -1 && slots.length > 0) {
+        slots.splice(pickedSlotIdx, 1);
+      }
+
+      if (!picked) break;
+
+      assignments.get(playerId)!.push(picked);
+      const poolIdx = remainingPool.findIndex(h => h.id === picked!.id);
+      if (poolIdx !== -1) remainingPool.splice(poolIdx, 1);
+      assigned++;
+    }
+
+    return players.map(p => ({
+      playerId: p.id,
+      heroOptions: assignments.get(p.id) || [],
+    }));
+  };
+
   // Handle draft mode selection
-  const handleSelectDraftMode = (mode: DraftMode) => {
+  const handleSelectDraftMode = async (mode: DraftMode) => {
     let initialDraftingState: DraftingState;
     const totalPlayerCount = localPlayers.length;
     
@@ -988,7 +1156,23 @@ const addPlayer = (team: Team) => {
           isComplete: false
         };
         break;
-        
+
+      case DraftMode.Novel: {
+        const novelAssignedHeroes = await assignNovelHeroes(localPlayers, deepShuffledHeroes);
+        initialDraftingState = {
+          mode,
+          currentTeam: firstTeam,
+          availableHeroes: [],
+          assignedHeroes: novelAssignedHeroes,
+          selectedHeroes: [],
+          bannedHeroes: [],
+          currentStep: 0,
+          pickBanSequence: [],
+          isComplete: false
+        };
+        break;
+      }
+
       default:
         // This shouldn't happen
         initialDraftingState = {
@@ -1026,8 +1210,8 @@ const addPlayer = (team: Team) => {
     // Update available heroes (remove selected hero)
     const newAvailableHeroes = draftingState.availableHeroes.filter(h => h.id !== hero.id);
     
-    // Update assigned heroes (remove this assignment if in Single mode)
-    const newAssignedHeroes = draftingState.mode === DraftMode.Single 
+    // Update assigned heroes (remove this assignment if in Single/Novel mode)
+    const newAssignedHeroes = (draftingState.mode === DraftMode.Single || draftingState.mode === DraftMode.Novel)
       ? draftingState.assignedHeroes.map(assignment => {
           if (assignment.playerId === playerId) {
             return {
@@ -1063,7 +1247,7 @@ const addPlayer = (team: Team) => {
     }
     
     // Handle next team selection based on draft mode
-    if (draftingState.mode === DraftMode.Single || draftingState.mode === DraftMode.AllPick || draftingState.mode === DraftMode.Random) {
+    if (draftingState.mode === DraftMode.Single || draftingState.mode === DraftMode.AllPick || draftingState.mode === DraftMode.Random || draftingState.mode === DraftMode.Novel) {
       // UPDATED: Check if a team has all heroes picked
       const titansComplete = titansPicked >= titansPlayers.length;
       const atlanteansComplete = atlanteansPicked >= atlanteansPlayers.length;
@@ -1216,7 +1400,7 @@ const addPlayer = (team: Team) => {
   };
 
   // NEW: Create initial state for a draft mode
-  const createInitialStateForDraftMode = (mode: DraftMode): DraftingState => {
+  const createInitialStateForDraftMode = async (mode: DraftMode): Promise<DraftingState> => {
     const totalPlayerCount = localPlayers.length;
     const availableHeroesForDraft = [...filteredHeroes];
     const firstTeam = gameState.coinSide;
@@ -1286,7 +1470,7 @@ const addPlayer = (team: Team) => {
         
       case DraftMode.PickAndBan:
         const pickBanSequence = generatePickBanSequence(totalPlayerCount);
-        
+
         return {
           mode,
           currentTeam: firstTeam,
@@ -1298,7 +1482,22 @@ const addPlayer = (team: Team) => {
           pickBanSequence,
           isComplete: false
         };
-        
+
+      case DraftMode.Novel: {
+        const novelAssigned = await assignNovelHeroes(localPlayers, deepShuffledHeroes);
+        return {
+          mode,
+          currentTeam: firstTeam,
+          availableHeroes: [],
+          assignedHeroes: novelAssigned,
+          selectedHeroes: [],
+          bannedHeroes: [],
+          currentStep: 0,
+          pickBanSequence: [],
+          isComplete: false
+        };
+      }
+
       default:
         return {
           mode: DraftMode.None,
@@ -1315,12 +1514,12 @@ const addPlayer = (team: Team) => {
   };
 
   // NEW: Handle reset draft
-  const handleResetDraft = () => {
+  const handleResetDraft = async () => {
     // Ask for confirmation before resetting
     playSound('buttonClick');
-    
+
     // Create a fresh initial state with the same draft mode
-    const freshState = createInitialStateForDraftMode(draftingState.mode);
+    const freshState = await createInitialStateForDraftMode(draftingState.mode);
     
     // Reset drafting state and history
     setDraftingState(freshState);
@@ -1797,11 +1996,17 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
   
   // NEW: Handle match statistics navigation
   const handleMatchStatisticsNavigate = (view: MatchesView) => {
+    // In view mode, only allow access to viewing stats, not editing/creating
+    if (isViewMode && view === 'record-match') {
+      return;
+    }
     setCurrentMatchView(view);
   };
   
   // NEW: Handle back from match statistics
   const handleBackFromMatchStatistics = () => {
+    // Prevent navigation back to setup in view mode
+    if (isViewMode) return;
     setShowMatchStatistics(false);
   };
 
@@ -1810,8 +2015,11 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
       {/* Add AudioInitializer at the top level */}
       <AudioInitializer />
 
+      {/* View Mode Banner - shown when viewing shared data */}
+      <ViewModeBanner />
+
       {!simpleTimerMode && (
-        <header className="App-header mb-8">
+        <header className={`App-header mb-8 ${isViewMode || isViewModeLoading || viewModeError ? 'mt-12' : ''}`}>
           <h1 className="text-3xl font-bold mb-2">Guards of Atlantis II Timer</h1>
         </header>
       )}
@@ -1828,20 +2036,24 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
       )}
 
       {/* Coin flip animation */}
+      <Suspense fallback={<FullScreenSpinner />}>
       {showCoinAnimation && (
-        <CoinToss 
-          result={gameState.coinSide} 
+        <CoinToss
+          result={gameState.coinSide}
           onComplete={() => {
             setShowCoinAnimation(false);
             setShowDraftModeSelection(true);
-          }} 
+          }}
         />
       )}
+      </Suspense>
 
       {/* Main content area */}
+      <Suspense fallback={<FullScreenSpinner />}>
       {showMatchStatistics ? (
   // Match Statistics View
-  <>
+  <StatsFilterProvider>
+    <Suspense fallback={<ViewSpinner />}>
     {currentMatchView === 'menu' && (
       <MatchesMenu 
         onBack={handleBackFromMatchStatistics}
@@ -1873,8 +2085,24 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
   />
 )}
     {currentMatchView === 'hero-stats' && (
-      <HeroStats 
+      <HeroStats
         onBack={() => handleMatchStatisticsNavigate('menu')}
+        initialStatsMode={heroStatsMode}
+        onViewHeroDetails={(heroId: number, statsMode?: 'local' | 'global') => {
+          setSelectedHeroId(heroId);
+          setHeroStatsMode(statsMode || 'local');
+          handleMatchStatisticsNavigate('detailed-hero-stats');
+        }}
+      />
+    )}
+    {currentMatchView === 'detailed-hero-stats' && selectedHeroId !== null && (
+      <DetailedHeroStats
+        heroId={selectedHeroId}
+        statsMode={heroStatsMode}
+        onBack={() => {
+          setSelectedHeroId(null);
+          handleMatchStatisticsNavigate('hero-stats');
+        }}
       />
     )}
     {currentMatchView === 'match-history' && (
@@ -1895,12 +2123,12 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
       />
     )}
     {currentMatchView === 'match-maker' && (
-      <MatchMaker 
+      <MatchMaker
         onBack={() => handleMatchStatisticsNavigate('menu')}
-        onUseTeams={(titanPlayerNames, atlanteanPlayerNames) => {
+        onUseTeams={isViewMode ? undefined : (titanPlayerNames, atlanteanPlayerNames) => {
           // Clear existing players
           setLocalPlayers([]);
-          
+
           // Create new players based on the teams
           // First the Titans
           const newPlayers = titanPlayerNames.map((name, index) => ({
@@ -1910,7 +2138,7 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
             name,
             // No initial stats - will be created when EndOfRoundAssistant logging enabled
           }));
-          
+
           // Then add the Atlanteans with continuing IDs
           const atlanteanPlayers = atlanteanPlayerNames.map((name, index) => ({
             id: titanPlayerNames.length + index + 1,
@@ -1919,22 +2147,23 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
             name,
             // No initial stats - will be created when EndOfRoundAssistant logging enabled
           }));
-          
+
           // Combine both teams
           const allPlayers = [...newPlayers, ...atlanteanPlayers];
-          
+
           // Set the new players
           setLocalPlayers(allPlayers);
-          
+
           // Return to game setup
           setShowMatchStatistics(false);
-          
+
           // Play a sound to indicate success
           playSound('phaseChange');
         }}
       />
     )}
-  </>
+    </Suspense>
+  </StatsFilterProvider>
 ) : !gameStarted ? (
         <div className="game-setup-container">
           {showDraftModeSelection ? (
@@ -1946,7 +2175,8 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
                 [DraftMode.AllPick]: canUseDraftMode(DraftMode.AllPick),
                 [DraftMode.Single]: canUseDraftMode(DraftMode.Single),
                 [DraftMode.Random]: canUseDraftMode(DraftMode.Random),
-                [DraftMode.PickAndBan]: canUseDraftMode(DraftMode.PickAndBan)
+                [DraftMode.PickAndBan]: canUseDraftMode(DraftMode.PickAndBan),
+                [DraftMode.Novel]: canUseDraftMode(DraftMode.Novel)
               }}
               heroCount={filteredHeroes.length}
               handicapTeam={handicapTeam}
@@ -2060,11 +2290,13 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
           onSavePlayerStats={handleSavePlayerStats}
         />
       )}
+      </Suspense>
 
       {/* Victory Screen */}
+      <Suspense fallback={<FullScreenSpinner />}>
       {showVictoryScreen && victorTeam && (
-        <VictoryScreen 
-          winningTeam={victorTeam} 
+        <VictoryScreen
+          winningTeam={victorTeam}
           onReturnToSetup={resetToSetup}
           players={localPlayers}
           gameLength={gameLength}
@@ -2072,22 +2304,53 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
           onUpdatePlayerStats={handleSavePlayerStats}
         />
       )}
+      </Suspense>
 
       {/* CollapsibleFeedback component */}
       <CollapsibleFeedback feedbackUrl="https://forms.gle/dsjjDSbqhTn3hATt6" />
       
       {/* Sound toggle component */}
       <SoundToggle />
+
+      {/* Cloud Sync Sidebar - hidden in view mode */}
+      <Suspense fallback={null}>
+        {!isViewMode && <CloudSidebar />}
+      </Suspense>
+
+      {/* Feature Announcements */}
+      <FeatureAnnouncement
+        id="cloud-sync-v1"
+        title="New: Cloud Sync!"
+        description={
+          <>
+            <p className="mb-2">
+              You can now sync your match data across devices and with friends!
+            </p>
+            <ul className="list-disc list-inside space-y-1 text-gray-400">
+              <li>Create an account to back up your data</li>
+              <li>Sync matches across your own devices</li>
+              <li>Share match data with friends</li>
+            </ul>
+            <p className="mt-3 text-orange-400">
+              Look for the <strong>orange arrow</strong> in the top-right corner to get started.
+            </p>
+          </>
+        }
+      />
     </div>
   );
 }
 
-// Main App component wrapped with SoundProvider
+// Main App component wrapped with providers
 function App() {
   return (
     <SoundProvider>
-      <ConnectionProvider> {/* Add ConnectionProvider here */}
-        <AppContent />
+      <ConnectionProvider>
+        <AuthProvider>
+          <ViewModeProvider>
+            <AppContent />
+          </ViewModeProvider>
+        </AuthProvider>
       </ConnectionProvider>
     </SoundProvider>
   );

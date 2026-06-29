@@ -1,13 +1,25 @@
 // src/components/matches/HeroStats.tsx
-import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, Search, Info, Filter, ChevronDown, ChevronUp, Shield, Camera } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { ChevronLeft, ChevronRight, Search, Info, Filter, ChevronDown, ChevronUp, Shield, Calendar, Globe, Users, RefreshCw, Loader2, AlertCircle, TrendingUp, Network, Crown, Flag, Skull } from 'lucide-react';
 import { Hero } from '../../types';
-import dbService from '../../services/DatabaseService';
 import { useSound } from '../../context/SoundContext';
 import EnhancedTooltip from '../common/EnhancedTooltip';
 import HeroInfoDisplay from '../common/HeroInfoDisplay';
 import { heroes as allHeroes } from '../../data/heroes';
-import html2canvas from 'html2canvas'; // Import html2canvas library
+import { GlobalStatsService, GlobalHeroStats } from '../../services/supabase/GlobalStatsService';
+import { isSupabaseConfigured } from '../../services/supabase/SupabaseClient';
+import HeroWinRateOverTime from './HeroWinRateOverTime';
+import HeroRelationshipGraph from './HeroRelationshipGraph';
+import { useDataSource } from '../../hooks/useDataSource';
+import ForestPlot from './ForestPlot';
+import { HeroImpactResult } from '../../types';
+
+// Victory type stats for heroes
+interface VictoryTypeStats {
+  throne: { wins: number; total: number };
+  wave: { wins: number; total: number };
+  kills: { wins: number; total: number };
+}
 
 // Hero statistics interface
 interface HeroStats {
@@ -20,36 +32,40 @@ interface HeroStats {
   winRate: number;
   complexity: number;
   roles: string[];
-  bestTeammates: { 
-    heroId: number, 
-    heroName: string, 
-    icon: string, 
-    winRate: number, 
-    gamesPlayed: number 
+  bestTeammates: {
+    heroId: number,
+    heroName: string,
+    icon: string,
+    winRate: number,
+    gamesPlayed: number
   }[];
-  bestAgainst: { 
-    heroId: number, 
-    heroName: string, 
-    icon: string, 
-    winRate: number, 
-    gamesPlayed: number 
+  bestAgainst: {
+    heroId: number,
+    heroName: string,
+    icon: string,
+    winRate: number,
+    gamesPlayed: number
   }[];
-  worstAgainst: { 
-    heroId: number, 
-    heroName: string, 
-    icon: string, 
-    winRate: number, 
-    gamesPlayed: number 
+  worstAgainst: {
+    heroId: number,
+    heroName: string,
+    icon: string,
+    winRate: number,
+    gamesPlayed: number
   }[];
   expansion: string;
+  victoryTypeStats?: VictoryTypeStats;
 }
 
 interface HeroStatsProps {
   onBack: () => void;
+  onViewHeroDetails?: (heroId: number, statsMode?: 'local' | 'global') => void;
+  initialStatsMode?: 'local' | 'global';
 }
 
-const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
+const HeroStats: React.FC<HeroStatsProps> = ({ onBack, onViewHeroDetails, initialStatsMode = 'local' }) => {
   const { playSound } = useSound();
+  const { isViewMode, isViewModeLoading, getHeroStats, getHeroImpact } = useDataSource();
   const [heroStats, setHeroStats] = useState<HeroStats[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -58,11 +74,43 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
   const [filterExpansion, setFilterExpansion] = useState<string | 'all'>('all');
   const [filterRole, setFilterRole] = useState<string | 'all'>('all');
   const [showFilterMenu, setShowFilterMenu] = useState<boolean>(false);
-  const [takingScreenshot, setTakingScreenshot] = useState<boolean>(false);
-  
-  // Create a ref to the main content container for screenshots
-  const contentRef = useRef<HTMLDivElement>(null);
-  
+  const [minGamesRelationship, setMinGamesRelationship] = useState<number>(() => {
+    const saved = localStorage.getItem('heroStats_minGames');
+    return saved ? parseInt(saved, 10) : 1;
+  });
+  const [recencyMonths, setRecencyMonths] = useState<number | null>(() => {
+    const saved = localStorage.getItem('heroStats_recencyMonths');
+    return saved ? parseInt(saved, 10) : null; // null = All Time
+  });
+  const [gameLengthFilter, setGameLengthFilter] = useState<'all' | 'quick' | 'long'>(() => {
+    const saved = localStorage.getItem('heroStats_gameLengthFilter');
+    return (saved === 'quick' || saved === 'long') ? saved : 'all';
+  });
+  const [playerCountFilter, setPlayerCountFilter] = useState<number | null>(() => {
+    const saved = localStorage.getItem('heroStats_playerCountFilter');
+    return saved ? parseInt(saved, 10) : null;
+  });
+
+  // Global stats mode state
+  const [statsMode, setStatsMode] = useState<'local' | 'global'>(initialStatsMode);
+  const [globalHeroStats, setGlobalHeroStats] = useState<GlobalHeroStats[]>([]);
+  const [globalStatsLoading, setGlobalStatsLoading] = useState(false);
+  const [globalStatsError, setGlobalStatsError] = useState<string | null>(null);
+  const [globalCacheAge, setGlobalCacheAge] = useState<number | null>(null);
+
+  // Win rate over time view state
+  const [showWinRateOverTime, setShowWinRateOverTime] = useState(false);
+
+  // Relationship graph view state
+  const [showRelationshipGraph, setShowRelationshipGraph] = useState(false);
+
+  // Hero impact state
+  const [heroImpact, setHeroImpact] = useState<Map<number, HeroImpactResult>>(new Map());
+  const [, setImpactLoading] = useState(false);
+
+  // Check if cloud features are available
+  const cloudAvailable = isSupabaseConfigured();
+
   // For hero tooltip display
   const [selectedHero, setSelectedHero] = useState<Hero | null>(null);
   const [showHeroInfo, setShowHeroInfo] = useState<boolean>(false);
@@ -73,112 +121,157 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
     height: number;
   } | undefined>(undefined);
 
-  // Load hero stats on component mount
+  // Calculate date range based on recencyMonths (must be defined before useEffect that uses it)
+  const dateRange = useMemo(() => {
+    if (recencyMonths === null) {
+      return { startDate: undefined, endDate: undefined };
+    }
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - recencyMonths);
+    return { startDate, endDate };
+  }, [recencyMonths]);
+
+  // Function to load global stats
+  const loadGlobalStats = useCallback(async (forceRefresh: boolean = false) => {
+    setGlobalStatsLoading(true);
+    setGlobalStatsError(null);
+    try {
+      const result = await GlobalStatsService.getGlobalHeroStats(
+        1,
+        minGamesRelationship,
+        forceRefresh
+      );
+      if (result.success && result.data) {
+        setGlobalHeroStats(result.data);
+        setGlobalCacheAge(GlobalStatsService.getCacheAge());
+      } else {
+        setGlobalStatsError(result.error || 'Failed to load global statistics');
+      }
+    } catch (error) {
+      console.error('Error loading global stats:', error);
+      setGlobalStatsError(error instanceof Error ? error.message : 'An unexpected error occurred');
+    } finally {
+      setGlobalStatsLoading(false);
+    }
+  }, [minGamesRelationship]);
+
+  // Load local hero stats on component mount and when filters change
   useEffect(() => {
-    const loadHeroStats = async () => {
-      setLoading(true);
+    // Wait for view mode loading to complete
+    if (isViewModeLoading) return;
+
+    if (statsMode === 'local') {
+      const loadHeroStats = async () => {
+        setLoading(true);
+        try {
+          // Get hero statistics using the view-mode aware data source
+          const stats = await getHeroStats(
+            minGamesRelationship,
+            dateRange.startDate,
+            dateRange.endDate,
+            gameLengthFilter,
+            playerCountFilter
+          );
+          setHeroStats(stats);
+        } catch (error) {
+          console.error('Error loading hero stats:', error);
+        } finally {
+          setLoading(false);
+        }
+      };
+      loadHeroStats();
+    }
+  }, [statsMode, minGamesRelationship, dateRange.startDate, dateRange.endDate, gameLengthFilter, playerCountFilter, isViewModeLoading, getHeroStats]);
+
+  // Load hero impact — local computation for local mode, global RPC for global mode
+  useEffect(() => {
+    if (isViewModeLoading) return;
+    const loadHeroImpact = async () => {
+      setImpactLoading(true);
       try {
-        // Get hero statistics from database
-        const stats = await dbService.getHeroStats();
-        setHeroStats(stats);
+        let results: HeroImpactResult[] = [];
+        if (statsMode === 'global') {
+          const resp = await GlobalStatsService.getGlobalHeroSkillStats();
+          if (resp.success && resp.data) {
+            results = resp.data;
+          }
+        } else {
+          results = await getHeroImpact(gameLengthFilter, playerCountFilter);
+        }
+        const map = new Map<number, HeroImpactResult>();
+        for (const r of results) map.set(r.heroId, r);
+        setHeroImpact(map);
       } catch (error) {
-        console.error('Error loading hero stats:', error);
+        console.error('Error computing hero impact:', error);
       } finally {
-        setLoading(false);
+        setImpactLoading(false);
       }
     };
-    
-    loadHeroStats();
-  }, []);
+    loadHeroImpact();
+  }, [statsMode, gameLengthFilter, playerCountFilter, isViewModeLoading, getHeroImpact]);
+
+  // Load global stats when switching to global mode (initial load)
+  useEffect(() => {
+    if (statsMode === 'global' && globalHeroStats.length === 0 && !globalStatsLoading) {
+      loadGlobalStats();
+    }
+  }, [statsMode, globalHeroStats.length, globalStatsLoading, loadGlobalStats]);
+
+  // Reload global stats when minGamesRelationship changes while in global mode
+  // Use a ref to track the previous value and avoid reload on initial mount
+  const prevMinGamesRef = useRef(minGamesRelationship);
+  useEffect(() => {
+    if (statsMode === 'global' && prevMinGamesRef.current !== minGamesRelationship) {
+      // Clear cache since params changed, then reload
+      GlobalStatsService.clearCache();
+      loadGlobalStats(true);
+    }
+    prevMinGamesRef.current = minGamesRelationship;
+  }, [statsMode, minGamesRelationship, loadGlobalStats]);
+
+  // Update cache age periodically when in global mode
+  useEffect(() => {
+    if (statsMode === 'global') {
+      const interval = setInterval(() => {
+        setGlobalCacheAge(GlobalStatsService.getCacheAge());
+      }, 10000); // Update every 10 seconds
+      return () => clearInterval(interval);
+    }
+  }, [statsMode]);
+
+  // Persist minGamesRelationship to localStorage
+  useEffect(() => {
+    localStorage.setItem('heroStats_minGames', minGamesRelationship.toString());
+  }, [minGamesRelationship]);
+
+  // Persist recencyMonths to localStorage
+  useEffect(() => {
+    if (recencyMonths === null) {
+      localStorage.removeItem('heroStats_recencyMonths');
+    } else {
+      localStorage.setItem('heroStats_recencyMonths', recencyMonths.toString());
+    }
+  }, [recencyMonths]);
+
+  // Persist gameLengthFilter to localStorage
+  useEffect(() => {
+    localStorage.setItem('heroStats_gameLengthFilter', gameLengthFilter);
+  }, [gameLengthFilter]);
+
+  // Persist playerCountFilter to localStorage
+  useEffect(() => {
+    if (playerCountFilter === null) {
+      localStorage.removeItem('heroStats_playerCountFilter');
+    } else {
+      localStorage.setItem('heroStats_playerCountFilter', playerCountFilter.toString());
+    }
+  }, [playerCountFilter]);
 
   // Handle back navigation with sound
   const handleBack = () => {
     playSound('buttonClick');
     onBack();
-  };
-
-  // Handle taking a screenshot of the content
-  const handleTakeScreenshot = async () => {
-    if (!contentRef.current) return;
-    
-    playSound('buttonClick');
-    setTakingScreenshot(true);
-    
-    try {
-      // Temporarily hide the hero info tooltip during screenshot
-      setShowHeroInfo(false);
-      
-      // Temporarily add a screenshot class to the parent element for styling during screenshot
-      contentRef.current.classList.add('taking-screenshot');
-      
-      // Create title section for the screenshot
-      const titleElement = document.createElement('div');
-      titleElement.className = 'screenshot-title text-center mb-6';
-      titleElement.innerHTML = `
-        <h1 class="text-3xl font-bold">Guards of Atlantis II - Hero Statistics</h1>
-        <p class="text-gray-400 mt-2">Generated on ${new Date().toLocaleDateString()}</p>
-      `;
-      
-      // Insert title at the top of the content
-      contentRef.current.insertBefore(titleElement, contentRef.current.firstChild);
-      
-      // Create footer for the screenshot
-      const footerElement = document.createElement('div');
-      footerElement.className = 'screenshot-footer text-center mt-8 text-sm text-gray-400';
-      footerElement.innerHTML = `
-        <p>Generated by Guards of Atlantis II Timer App on ${new Date().toLocaleString()}</p>
-      `;
-      
-      // Append footer to the content
-      contentRef.current.appendChild(footerElement);
-      
-      // Hide elements that shouldn't be in the screenshot
-      const noScreenshotElements = contentRef.current.querySelectorAll('.no-screenshot');
-      noScreenshotElements.forEach(el => {
-        (el as HTMLElement).style.display = 'none';
-      });
-      
-      // Take the screenshot
-      const canvas = await html2canvas(contentRef.current, {
-        backgroundColor: '#1F2937', // Match the background color (bg-gray-800)
-        windowWidth: 1400, // Updated width to match CSS
-        scrollX: 0,
-        scrollY: 0,
-        scale: window.devicePixelRatio || 1, // Use device pixel ratio for sharper images
-        logging: false, // Disable logging to console
-        allowTaint: true, // Allow cross-origin images
-        useCORS: true, // Try to load images with CORS
-        onclone: (clonedDoc) => {
-          // Additional modifications to the cloned document before screenshot
-          const clonedContent = clonedDoc.querySelector('#screenshotContent');
-          if (clonedContent) {
-            // Apply any additional styles or modifications to cloned content if needed
-            clonedContent.scrollTop = 0; // Ensure we're at the top of the content
-          }
-        }
-      });
-      
-      // Convert canvas to data URL and trigger download
-      const dataUrl = canvas.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = `guards-of-atlantis-hero-stats-${new Date().toISOString().slice(0, 10)}.png`;
-      link.href = dataUrl;
-      link.click();
-      
-      // Clean up: remove title, footer, and classes added for screenshot
-      contentRef.current.removeChild(titleElement);
-      contentRef.current.removeChild(footerElement);
-      contentRef.current.classList.remove('taking-screenshot');
-      
-      // Restore elements that were hidden
-      noScreenshotElements.forEach(el => {
-        (el as HTMLElement).style.display = '';
-      });
-    } catch (error) {
-      console.error('Error creating screenshot:', error);
-    } finally {
-      setTakingScreenshot(false);
-    }
   };
 
   // Handle sort button click
@@ -207,6 +300,10 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
     setSearchTerm('');
     setFilterExpansion('all');
     setFilterRole('all');
+    setMinGamesRelationship(1);
+    setRecencyMonths(null);
+    setGameLengthFilter('all');
+    setPlayerCountFilter(null);
     setShowFilterMenu(false);
   };
 
@@ -245,26 +342,49 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
     }
   };
 
+  // Get active hero stats based on current mode
+  // In global mode, show all heroes from static data immediately while stats load
+  const activeHeroStats = useMemo(() => {
+    if (statsMode === 'local') return heroStats;
+    if (globalHeroStats.length > 0) return globalHeroStats;
+    return allHeroes.map(h => ({
+      heroId: h.id,
+      heroName: h.name,
+      icon: h.icon,
+      totalGames: 0,
+      wins: 0,
+      losses: 0,
+      winRate: 0,
+      complexity: h.complexity,
+      roles: h.roles,
+      expansion: h.expansion,
+      bestTeammates: [],
+      bestAgainst: [],
+      worstAgainst: [],
+      victoryTypeStats: undefined,
+    }));
+  }, [statsMode, heroStats, globalHeroStats]);
+
   // Extract all available roles from heroes
   const allRoles = React.useMemo(() => {
     const roleSet = new Set<string>();
-    heroStats.forEach(hero => {
+    activeHeroStats.forEach(hero => {
       hero.roles.forEach(role => roleSet.add(role));
     });
     return Array.from(roleSet).sort();
-  }, [heroStats]);
+  }, [activeHeroStats]);
 
   // Extract all available expansions from heroes
   const allExpansions = React.useMemo(() => {
     const expansionSet = new Set<string>();
-    heroStats.forEach(hero => {
+    activeHeroStats.forEach(hero => {
       expansionSet.add(hero.expansion);
     });
     return Array.from(expansionSet).sort();
-  }, [heroStats]);
+  }, [activeHeroStats]);
 
   // Filter and sort heroes
-  const filteredHeroes = heroStats
+  const filteredHeroes = activeHeroStats
     .filter(hero => {
       // Apply search filter
       if (searchTerm) {
@@ -302,6 +422,14 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
         case 'complexity':
           comparison = a.complexity - b.complexity;
           break;
+        case 'impact': {
+          const aImpact = heroImpact.get(a.heroId);
+          const bImpact = heroImpact.get(b.heroId);
+          const aAte = aImpact ? aImpact.ate : -999;
+          const bAte = bImpact ? bImpact.ate : -999;
+          comparison = aAte - bAte;
+          break;
+        }
         default:
           comparison = 0;
       }
@@ -453,9 +581,37 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
     };
   }, []);
 
+  // Render the Win Rate Over Time view if selected
+  if (showWinRateOverTime) {
+    return (
+      <HeroWinRateOverTime
+        onBack={() => setShowWinRateOverTime(false)}
+        initialStatsMode={statsMode}
+        inheritedMinGames={minGamesRelationship}
+        inheritedDateRange={dateRange.startDate ? { startDate: dateRange.startDate, endDate: dateRange.endDate } : undefined}
+        inheritedGameLengthFilter={gameLengthFilter}
+        inheritedPlayerCountFilter={playerCountFilter}
+      />
+    );
+  }
+
+  // Render the Relationship Graph view if selected
+  if (showRelationshipGraph) {
+    return (
+      <HeroRelationshipGraph
+        onBack={() => setShowRelationshipGraph(false)}
+        initialStatsMode={statsMode}
+        inheritedMinGames={minGamesRelationship}
+        inheritedDateRange={dateRange.startDate ? { startDate: dateRange.startDate, endDate: dateRange.endDate } : undefined}
+        inheritedGameLengthFilter={gameLengthFilter}
+        inheritedPlayerCountFilter={playerCountFilter}
+      />
+    );
+  }
+
   return (
-    <div ref={contentRef} id="screenshotContent" className="bg-gray-800 rounded-lg p-6">
-      <div className="flex justify-between items-center mb-6 no-screenshot">
+    <div className="bg-gray-800 rounded-lg p-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 no-screenshot">
         <button
           onClick={handleBack}
           className="flex items-center text-gray-300 hover:text-white"
@@ -463,21 +619,150 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
           <ChevronLeft size={20} className="mr-1" />
           <span>Back to Menu</span>
         </button>
-        <h2 className="text-2xl font-bold">Hero Statistics</h2>
-        
-        {/* Screenshot Button - replaced Print button */}
-        <EnhancedTooltip text="Take a screenshot of all hero statistics" position="left">
-          <button
-            onClick={handleTakeScreenshot}
-            className="flex items-center px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg"
-            disabled={takingScreenshot}
-          >
-            <Camera size={18} className="mr-2" />
-            <span>{takingScreenshot ? 'Capturing...' : 'Share Stats'}</span>
-          </button>
-        </EnhancedTooltip>
+        <h2 className="text-2xl font-bold text-center sm:text-left">Hero Statistics</h2>
+
+        {/* Mobile-optimized button group */}
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          {/* Win Rate Over Time Button */}
+          <EnhancedTooltip text="View hero win rate progression over time" position="left">
+            <button
+              onClick={() => {
+                playSound('buttonClick');
+                setShowWinRateOverTime(true);
+              }}
+              className="flex items-center justify-center px-3 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg w-full sm:w-auto"
+            >
+              <TrendingUp size={18} className="mr-2" />
+              <span className="whitespace-nowrap">View Over Time</span>
+            </button>
+          </EnhancedTooltip>
+
+          {/* Relationship Graph Button */}
+          <EnhancedTooltip text="View hero relationships as a network graph" position="left">
+            <button
+              onClick={() => {
+                playSound('buttonClick');
+                setShowRelationshipGraph(true);
+              }}
+              className="flex items-center justify-center px-3 py-2 bg-teal-600 hover:bg-teal-500 rounded-lg w-full sm:w-auto"
+            >
+              <Network size={18} className="mr-2" />
+              <span className="whitespace-nowrap">Relationships</span>
+            </button>
+          </EnhancedTooltip>
+
+        </div>
       </div>
-      
+
+      {/* Stats Mode Toggle - Play Group vs Global */}
+      {cloudAvailable && (
+        <div className="mb-4 no-screenshot">
+          <div className="flex items-center justify-center gap-2">
+            <button
+              onClick={() => {
+                playSound('buttonClick');
+                setStatsMode('local');
+              }}
+              className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
+                statsMode === 'local'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              <Users size={18} className="mr-2" />
+              Play Group
+            </button>
+            <button
+              onClick={() => {
+                playSound('buttonClick');
+                setStatsMode('global');
+              }}
+              className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
+                statsMode === 'global'
+                  ? 'bg-green-600 text-white'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              <Globe size={18} className="mr-2" />
+              Global
+            </button>
+          </div>
+          <p className="text-center text-xs text-gray-500 mt-2">
+            {statsMode === 'local'
+              ? (isViewMode ? 'Showing statistics from the shared match history' : 'Showing statistics from your match history')
+              : 'Showing aggregated statistics from all players'}
+          </p>
+        </div>
+      )}
+
+      {/* Global Stats Banner */}
+      {statsMode === 'global' && (
+        <div className="mb-4 p-3 bg-green-900/30 border border-green-700/50 rounded-lg no-screenshot">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <Globe size={18} className="mr-2 text-green-400 flex-shrink-0" />
+              <span className="text-sm text-green-200">
+                Viewing global statistics from all players who have uploaded data via Cloud Sync
+                {globalCacheAge !== null && (
+                  <span className="ml-2 text-green-400/70">
+                    (cached {globalCacheAge < 60 ? `${globalCacheAge}s` : `${Math.floor(globalCacheAge / 60)}m`} ago)
+                  </span>
+                )}
+              </span>
+            </div>
+            <button
+              onClick={() => {
+                playSound('buttonClick');
+                GlobalStatsService.clearCache();
+                loadGlobalStats(true);
+              }}
+              disabled={globalStatsLoading}
+              className="flex items-center px-2 py-1 text-sm bg-green-700 hover:bg-green-600 rounded transition-colors disabled:opacity-50"
+              title="Refresh global data"
+            >
+              {globalStatsLoading ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <RefreshCw size={14} />
+              )}
+              <span className="ml-1">Refresh</span>
+            </button>
+          </div>
+          <p className="text-xs text-green-200/60 mt-2">
+            Global stats update hourly. Time period filter is not available. Data is not saved locally.
+          </p>
+        </div>
+      )}
+
+      {/* Global Stats Error */}
+      {statsMode === 'global' && globalStatsError && (
+        <div className="mb-4 p-3 bg-red-900/30 border border-red-700/50 rounded-lg no-screenshot">
+          <div className="flex items-center">
+            <AlertCircle size={18} className="mr-2 text-red-400 flex-shrink-0" />
+            <span className="text-sm text-red-200">{globalStatsError}</span>
+          </div>
+          <button
+            onClick={() => {
+              playSound('buttonClick');
+              loadGlobalStats(true);
+            }}
+            className="mt-2 text-sm text-red-400 hover:text-red-300 underline"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {/* Global Stats Loading */}
+      {statsMode === 'global' && globalStatsLoading && globalHeroStats.length === 0 && (
+        <div className="flex justify-center items-center h-32 no-screenshot">
+          <div className="flex flex-col items-center">
+            <Loader2 size={32} className="animate-spin text-green-400 mb-2" />
+            <span className="text-gray-400">Loading global statistics...</span>
+          </div>
+        </div>
+      )}
+
       {/* Search and Filter Bar */}
       <div className="bg-gray-700 rounded-lg p-4 mb-6 no-screenshot">
         <div className="flex flex-col md:flex-row gap-4 items-stretch">
@@ -518,13 +803,25 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
             <button
               onClick={() => handleSort('complexity')}
               className={`px-3 py-1 rounded ${
-                sortBy === 'complexity' 
-                  ? 'bg-blue-600 hover:bg-blue-500' 
+                sortBy === 'complexity'
+                  ? 'bg-blue-600 hover:bg-blue-500'
                   : 'bg-gray-600 hover:bg-gray-500'
               }`}
             >
               Complexity {sortBy === 'complexity' && (sortOrder === 'asc' ? '↑' : '↓')}
             </button>
+            {heroImpact.size > 0 && (
+              <button
+                onClick={() => handleSort('impact')}
+                className={`px-3 py-1 rounded ${
+                  sortBy === 'impact'
+                    ? 'bg-blue-600 hover:bg-blue-500'
+                    : 'bg-gray-600 hover:bg-gray-500'
+                }`}
+              >
+                Impact {sortBy === 'impact' && (sortOrder === 'asc' ? '↑' : '↓')}
+              </button>
+            )}
             <button
               onClick={() => handleSort('name')}
               className={`px-3 py-1 rounded ${
@@ -545,9 +842,9 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
             >
               <Filter size={18} className="mr-2" />
               <span>Filters</span>
-              {(filterExpansion !== 'all' || filterRole !== 'all') && (
+              {(filterExpansion !== 'all' || filterRole !== 'all' || minGamesRelationship !== 1 || recencyMonths !== null || gameLengthFilter !== 'all' || playerCountFilter !== null) && (
                 <span className="ml-2 bg-blue-600 text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                  {(filterExpansion !== 'all' ? 1 : 0) + (filterRole !== 'all' ? 1 : 0)}
+                  {(filterExpansion !== 'all' ? 1 : 0) + (filterRole !== 'all' ? 1 : 0) + (minGamesRelationship !== 1 ? 1 : 0) + (recencyMonths !== null ? 1 : 0) + (gameLengthFilter !== 'all' ? 1 : 0) + (playerCountFilter !== null ? 1 : 0)}
                 </span>
               )}
               {showFilterMenu ? (
@@ -561,7 +858,120 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
             {showFilterMenu && (
               <div className="absolute right-0 top-full mt-1 z-10 bg-gray-800 border border-gray-600 rounded-lg shadow-lg p-4 w-72">
                 <h4 className="font-medium mb-3">Filter Options</h4>
-                
+
+                {/* Time Period Filter */}
+                <div className={`mb-4 ${statsMode === 'global' ? 'opacity-50' : ''}`}>
+                  <label className="block text-sm text-gray-400 mb-2">
+                    Time Period
+                    {statsMode === 'global' && (
+                      <span className="ml-2 text-xs text-yellow-500">(not available for global stats)</span>
+                    )}
+                  </label>
+                  <div className="space-y-2">
+                    <label className={`flex items-center ${statsMode === 'global' ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                      <input
+                        type="radio"
+                        name="timePeriod"
+                        checked={recencyMonths === null}
+                        onChange={() => setRecencyMonths(null)}
+                        disabled={statsMode === 'global'}
+                        className="mr-2 accent-blue-500"
+                      />
+                      <span className="text-sm">All Time</span>
+                    </label>
+                    <label className={`flex items-center ${statsMode === 'global' ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                      <input
+                        type="radio"
+                        name="timePeriod"
+                        checked={recencyMonths !== null}
+                        onChange={() => setRecencyMonths(recencyMonths || 6)}
+                        disabled={statsMode === 'global'}
+                        className="mr-2 accent-blue-500"
+                      />
+                      <span className="text-sm mr-2">Last</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="24"
+                        value={recencyMonths || 6}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value, 10);
+                          if (!isNaN(value) && value >= 1 && value <= 24) {
+                            setRecencyMonths(value);
+                          }
+                        }}
+                        disabled={recencyMonths === null || statsMode === 'global'}
+                        className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                      />
+                      <span className="text-sm ml-2">months</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Game Length Filter (local only — global data is aggregated) */}
+                {statsMode === 'local' && (
+                  <div className="mb-4">
+                    <label className="block text-sm text-gray-400 mb-2">Game Length</label>
+                    <div className="space-y-2">
+                      {([['all', 'All'], ['quick', 'Short (Quick)'], ['long', 'Long']] as const).map(([value, label]) => (
+                        <label key={value} className="flex items-center cursor-pointer">
+                          <input
+                            type="radio"
+                            name="heroGameLengthFilter"
+                            checked={gameLengthFilter === value}
+                            onChange={() => setGameLengthFilter(value)}
+                            className="mr-2 accent-blue-500"
+                          />
+                          <span className="text-sm">{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Player Count Filter (local only — global data is aggregated) */}
+                {statsMode === 'local' && (
+                  <div className="mb-4">
+                    <label className="block text-sm text-gray-400 mb-1">Player Count</label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          if (playerCountFilter === null) setPlayerCountFilter(10);
+                          else if (playerCountFilter > 4) setPlayerCountFilter(playerCountFilter - 1);
+                        }}
+                        disabled={playerCountFilter !== null && playerCountFilter <= 4}
+                        className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                      >
+                        −
+                      </button>
+                      <div className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-center font-medium">
+                        {playerCountFilter === null ? 'All' : playerCountFilter}
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (playerCountFilter === null) setPlayerCountFilter(4);
+                          else if (playerCountFilter < 10) setPlayerCountFilter(playerCountFilter + 1);
+                        }}
+                        disabled={playerCountFilter !== null && playerCountFilter >= 10}
+                        className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                      >
+                        +
+                      </button>
+                    </div>
+                    {playerCountFilter !== null && (
+                      <button
+                        onClick={() => setPlayerCountFilter(null)}
+                        className="text-xs text-blue-400 hover:text-blue-300 mt-1"
+                      >
+                        Reset to All
+                      </button>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                      Total players in the match (both teams)
+                    </p>
+                  </div>
+                )}
+
                 {/* Expansion Filter */}
                 <div className="mb-4">
                   <label className="block text-sm text-gray-400 mb-1">Expansion</label>
@@ -591,7 +1001,34 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
                     ))}
                   </select>
                 </div>
-                
+
+                {/* Min Games for Relationships */}
+                <div className="mb-4">
+                  <label className="block text-sm text-gray-400 mb-1">Min games for relationships</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setMinGamesRelationship(prev => Math.max(1, prev - 1))}
+                      disabled={minGamesRelationship <= 1}
+                      className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                    >
+                      −
+                    </button>
+                    <div className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-center font-medium">
+                      {minGamesRelationship}
+                    </div>
+                    <button
+                      onClick={() => setMinGamesRelationship(prev => Math.min(20, prev + 1))}
+                      disabled={minGamesRelationship >= 20}
+                      className="w-10 h-10 flex items-center justify-center bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xl font-bold"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Only show teammate/opponent stats with at least this many shared games
+                  </p>
+                </div>
+
                 {/* Reset Filters Button */}
                 <button
                   onClick={resetFilters}
@@ -616,9 +1053,23 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
           </ul>
         </div>
       )}
-      
-      {/* Loading State */}
-      {loading ? (
+
+      {/* Date Range Banner - shown when recency filter is active (local mode only) */}
+      {statsMode === 'local' && recencyMonths !== null && dateRange.startDate && dateRange.endDate && (
+        <div className="mb-4 p-3 bg-blue-900/30 border border-blue-700/50 rounded-lg flex items-center">
+          <Calendar size={18} className="mr-2 text-blue-400 flex-shrink-0" />
+          <span className="text-sm text-blue-200">
+            Showing stats from{' '}
+            <span className="font-medium">{dateRange.startDate.toLocaleDateString()}</span>
+            {' '}to{' '}
+            <span className="font-medium">{dateRange.endDate.toLocaleDateString()}</span>
+            {' '}({recencyMonths} month{recencyMonths !== 1 ? 's' : ''})
+          </span>
+        </div>
+      )}
+
+      {/* Loading State (local only — global shows placeholder cards immediately) */}
+      {(statsMode === 'local' && loading) ? (
         <div className="flex justify-center items-center h-64">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
         </div>
@@ -635,11 +1086,18 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
                 return (
                   <div key={hero.heroId} className="bg-gray-700 rounded-lg overflow-hidden shadow-md">
                     {/* Hero Header */}
-                    <div 
+                    <div
                       className="px-5 py-4 bg-gray-800 flex items-center cursor-pointer"
                       onMouseEnter={(e) => handleHeroMouseEnter(getHeroById(hero.heroId)!, e)}
                       onMouseLeave={handleHeroMouseLeave}
-                      onClick={(e) => handleHeroClick(getHeroById(hero.heroId)!, e)}
+                      onClick={(e) => {
+                        if (onViewHeroDetails) {
+                          playSound('buttonClick');
+                          onViewHeroDetails(hero.heroId, statsMode);
+                        } else {
+                          handleHeroClick(getHeroById(hero.heroId)!, e);
+                        }
+                      }}
                     >
                       <div className="w-16 h-16 bg-gray-900 rounded-full overflow-hidden mr-4 flex-shrink-0">
                         <img 
@@ -663,6 +1121,7 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
                     {/* Hero Stats */}
                     <div className="p-4">
                       {/* Win/Loss Stats */}
+                      {hero.totalGames > 0 ? (
                       <div className="mb-4">
                         <div className="flex justify-between items-center mb-2">
                           <div className="text-sm text-gray-400 flex items-center">
@@ -672,8 +1131,8 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
                           <div className="font-medium">{hero.winRate.toFixed(1)}%</div>
                         </div>
                         <div className="h-2 bg-red-600 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-green-500" 
+                          <div
+                            className="h-full bg-green-500"
                             style={{ width: `${hero.winRate}%` }}
                           ></div>
                         </div>
@@ -683,7 +1142,118 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
                           <span>Total: {hero.totalGames}</span>
                         </div>
                       </div>
-                      
+                      ) : (
+                      <div className="mb-4 space-y-2 animate-pulse">
+                        <div className="h-4 bg-gray-600 rounded w-24" />
+                        <div className="h-2 bg-gray-600 rounded-full" />
+                        <div className="h-3 bg-gray-600 rounded w-32" />
+                      </div>
+                      )}
+
+                      {/* Hero Impact */}
+                      {(() => {
+                        const impact = heroImpact.get(hero.heroId);
+                        if (!impact && hero.totalGames > 0 && heroImpact.size === 0) {
+                          return (
+                            <div className="mb-4">
+                              <div className="text-sm text-gray-400 mb-2">Hero Impact</div>
+                              <div className="h-5 bg-gray-800 rounded-full animate-pulse" />
+                            </div>
+                          );
+                        }
+                        if (!impact) return null;
+                        return (
+                          <div className="mb-4">
+                            <div className="flex justify-between items-center mb-2">
+                              <div className="text-sm text-gray-400">Hero Impact</div>
+                              <div className="flex items-center gap-2">
+                                {!impact.sufficient && (
+                                  <span className="text-xs px-2 py-0.5 bg-gray-600 text-gray-300 rounded-full">EARLY</span>
+                                )}
+                                <span className={`font-medium ${
+                                  impact.ciLower > 0 ? 'text-green-400' :
+                                  impact.ciUpper < 0 ? 'text-yellow-400' : 'text-gray-400'
+                                }`}>
+                                  {impact.ate >= 0 ? '+' : ''}{(impact.ate * 100).toFixed(1)}%
+                                </span>
+                              </div>
+                            </div>
+                            <ForestPlot ate={impact.ate} ciLower={impact.ciLower} ciUpper={impact.ciUpper} sufficient={impact.sufficient} />
+                            <div className="mt-2 h-6">
+                              {impact.gradientBadge !== 'balanced' && (
+                                <span className={`text-xs px-2 py-1 rounded-full ${
+                                  impact.gradientBadge === 'rewards-skill'
+                                    ? 'bg-purple-900/50 text-purple-300'
+                                    : 'bg-green-900/50 text-green-300'
+                                }`}>
+                                  {impact.gradientBadge === 'rewards-skill' ? 'Rewards Skill' : 'Beginner Friendly'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Victory Type Distribution */}
+                      {hero.victoryTypeStats && (() => {
+                        const stats = hero.victoryTypeStats;
+                        const totalGamesRecorded = stats.throne.total + stats.wave.total + stats.kills.total;
+                        const totalWinsRecorded = stats.throne.wins + stats.wave.wins + stats.kills.wins;
+
+                        if (totalGamesRecorded === 0) return null;
+
+                        const types = [
+                          { key: 'throne', label: 'Throne', Icon: Crown, bgColor: 'bg-yellow-500', data: stats.throne },
+                          { key: 'wave', label: 'Wave', Icon: Flag, bgColor: 'bg-blue-500', data: stats.wave },
+                          { key: 'kills', label: 'Kills', Icon: Skull, bgColor: 'bg-red-500', data: stats.kills }
+                        ];
+
+                        const renderBar = (
+                          getValue: (t: typeof types[0]) => number,
+                          total: number,
+                          label: string
+                        ) => {
+                          const filtered = types.filter(t => getValue(t) > 0);
+                          if (filtered.length === 0) return null;
+
+                          return (
+                            <div className="mb-2">
+                              <div className="text-xs text-gray-500 mb-1">{label}</div>
+                              <div className="flex h-5 rounded overflow-hidden bg-gray-800">
+                                {filtered.map(type => {
+                                  const value = getValue(type);
+                                  const percentage = (value / total) * 100;
+                                  const Icon = type.Icon;
+
+                                  return (
+                                    <div
+                                      key={type.key}
+                                      className={`${type.bgColor} h-full flex items-center justify-center gap-1 text-white text-xs font-medium`}
+                                      style={{ width: `${percentage}%` }}
+                                      title={`${type.label}: ${value} (${Math.round(percentage)}%)`}
+                                    >
+                                      <Icon size={10} />
+                                      {percentage >= 25 && <span>{value}</span>}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        };
+
+                        return (
+                          <div className="mb-4">
+                            <div className="flex justify-between items-center mb-2">
+                              <div className="text-sm text-gray-400">Victory Types</div>
+                              <div className="text-xs text-gray-500">{totalGamesRecorded} of {hero.totalGames} games</div>
+                            </div>
+                            {renderBar(t => t.data.total, totalGamesRecorded, 'Games by Type')}
+                            {renderBar(t => t.data.wins, totalWinsRecorded, 'Wins by Type')}
+                          </div>
+                        );
+                      })()}
+
                       {/* Best Teammates Section */}
                       <div className="mb-4">
                         <div className="flex items-center mb-2">
@@ -721,15 +1291,15 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
                       </div>
                       
                       {/* Worst Against Section */}
-                      <div>
+                      <div className="mb-4">
                         <div className="flex items-center mb-2">
                           <h4 className="font-semibold text-sm">Countered By</h4>
                           <Info size={14} className="ml-1 text-gray-500 cursor-help" />
                         </div>
-                        
+
                         {hero.worstAgainst.length > 0 ? (
                           <div className="grid grid-cols-3 gap-2">
-                            {hero.worstAgainst.map(opponent => 
+                            {hero.worstAgainst.map(opponent =>
                               renderHeroIcon(opponent)
                             )}
                           </div>
@@ -737,6 +1307,20 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
                           <div className="text-sm text-gray-500 italic">No data available</div>
                         )}
                       </div>
+
+                      {/* View Details Button */}
+                      {onViewHeroDetails && hero.totalGames > 0 && (
+                        <button
+                          onClick={() => {
+                            playSound('buttonClick');
+                            onViewHeroDetails(hero.heroId, statsMode);
+                          }}
+                          className="w-full mt-2 px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-lg text-sm text-gray-200 flex items-center justify-center transition-colors"
+                        >
+                          View Detailed Stats
+                          <ChevronRight size={16} className="ml-1" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -779,10 +1363,18 @@ const HeroStats: React.FC<HeroStatsProps> = ({ onBack }) => {
           <Info size={16} className="mr-2 text-blue-400" />
           About Hero Statistics
         </h4>
-        <p className="mb-2">
-          These statistics show hero performance based on your match history. Win rates and synergies are calculated from 
-          your recorded matches, so they reflect your group's playstyle and may differ from general statistics.
-        </p>
+        {statsMode === 'local' ? (
+          <p className="mb-2">
+            These statistics show hero performance based on your match history. Win rates and synergies are calculated from
+            your recorded matches, so they reflect your play group's style and may differ from global statistics.
+          </p>
+        ) : (
+          <p className="mb-2">
+            These are aggregated statistics from all players who have uploaded their matches to the cloud.
+            Win rates and synergies reflect the global community's experience. This data is downloaded fresh each session
+            and is not stored locally.
+          </p>
+        )}
       </div>
     </div>
   );
