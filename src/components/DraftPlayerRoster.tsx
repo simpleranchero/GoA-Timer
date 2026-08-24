@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, lazy, Suspense } from 'react';
 import PlayerRosterService, { RosterEntry } from '../services/PlayerRosterService';
 import {
   IndicatorColor,
@@ -8,6 +8,9 @@ import {
   generateRoster
 } from '../services/RosterGenerator';
 import { useSound } from '../context/SoundContext';
+import type { CoinSide } from './CoinToss';
+
+const CoinToss = lazy(() => import('./CoinToss'));
 
 type CurrentPlayerRow = RosterPlayer;
 
@@ -40,6 +43,8 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({ onRosterGenerated
   const [newName, setNewName] = useState('');
   const [generatedRoster, setGeneratedRoster] = useState<GeneratedRoster | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [coinResult, setCoinResult] = useState<CoinSide | null>(null);
+  const [showCoinFlip, setShowCoinFlip] = useState(false);
 
   useEffect(() => {
     setRoster(PlayerRosterService.load());
@@ -48,6 +53,8 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({ onRosterGenerated
   useEffect(() => {
     setGeneratedRoster(null);
     setGenerationError(null);
+    setCoinResult(null);
+    setShowCoinFlip(false);
     onRosterGenerated?.(null);
   }, [currentPlayers]);
 
@@ -93,11 +100,15 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({ onRosterGenerated
       setGeneratedRoster(result);
       setGenerationError(null);
       onRosterGenerated?.(result);
+      setCoinResult(Math.random() < 0.5 ? 'blue' : 'red');
+      setShowCoinFlip(true);
     } else {
       setGeneratedRoster(null);
       setGenerationError(
         `Could not generate a ${targetHeroes}-hero roster from the current players' color and UNO/DUO/ANY settings.`
       );
+      setCoinResult(null);
+      setShowCoinFlip(false);
       onRosterGenerated?.(null);
     }
     playSound('buttonClick');
@@ -206,30 +217,46 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({ onRosterGenerated
         )}
 
         {generatedRoster && (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <h3 className="text-lg font-semibold mb-2 text-blue-400">Blue</h3>
-              <div className="flex flex-col gap-1">
-                {generatedRoster.blue.map((name, i) => (
-                  <div key={`blue-${i}`} className="px-3 py-1.5 rounded bg-gray-700 text-sm">
-                    {name}
-                  </div>
-                ))}
+          <div className="flex flex-col gap-3">
+            {coinResult && (
+              <div className="text-center text-sm font-medium">
+                Landed on:{' '}
+                <span className={coinResult === 'blue' ? 'text-blue-400' : 'text-red-400'}>
+                  {coinResult === 'blue' ? 'Blue' : 'Red'}
+                </span>
               </div>
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold mb-2 text-red-400">Red</h3>
-              <div className="flex flex-col gap-1">
-                {generatedRoster.red.map((name, i) => (
-                  <div key={`red-${i}`} className="px-3 py-1.5 rounded bg-gray-700 text-sm">
-                    {name}
-                  </div>
-                ))}
+            )}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <h3 className="text-lg font-semibold mb-2 text-blue-400">Blue</h3>
+                <div className="flex flex-col gap-1">
+                  {generatedRoster.blue.map((name, i) => (
+                    <div key={`blue-${i}`} className="px-3 py-1.5 rounded bg-gray-700 text-sm">
+                      {name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold mb-2 text-red-400">Red</h3>
+                <div className="flex flex-col gap-1">
+                  {generatedRoster.red.map((name, i) => (
+                    <div key={`red-${i}`} className="px-3 py-1.5 rounded bg-gray-700 text-sm">
+                      {name}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
         )}
       </div>
+
+      {showCoinFlip && coinResult && (
+        <Suspense fallback={null}>
+          <CoinToss result={coinResult} onComplete={() => setShowCoinFlip(false)} />
+        </Suspense>
+      )}
     </div>
   );
 };

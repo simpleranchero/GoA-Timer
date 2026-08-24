@@ -5,7 +5,6 @@ import GameTimer from './components/GameTimer';
 import SimpleGameTimer from './components/SimpleGameTimer';
 import CollapsibleFeedback from './components/common/CollapsibleFeedback';
 import SoundToggle from './components/common/SoundToggle';
-import FeatureAnnouncement from './components/common/FeatureAnnouncement';
 import AudioInitializer from './components/common/AudioInitializer';
 import ResumeGamePrompt from './components/common/ResumeGamePrompt';
 import { gameStorageService } from './services/GameStorageService';
@@ -2039,7 +2038,7 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
       <Suspense fallback={<FullScreenSpinner />}>
       {showCoinAnimation && (
         <CoinToss
-          result={gameState.coinSide}
+          result={gameState.coinSide === Team.Titans ? 'blue' : 'red'}
           onComplete={() => {
             setShowCoinAnimation(false);
             setShowDraftModeSelection(true);
@@ -2317,26 +2316,6 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
         {!isViewMode && <CloudSidebar />}
       </Suspense>
 
-      {/* Feature Announcements */}
-      <FeatureAnnouncement
-        id="cloud-sync-v1"
-        title="New: Cloud Sync!"
-        description={
-          <>
-            <p className="mb-2">
-              You can now sync your match data across devices and with friends!
-            </p>
-            <ul className="list-disc list-inside space-y-1 text-gray-400">
-              <li>Create an account to back up your data</li>
-              <li>Sync matches across your own devices</li>
-              <li>Share match data with friends</li>
-            </ul>
-            <p className="mt-3 text-orange-400">
-              Look for the <strong>orange arrow</strong> in the top-right corner to get started.
-            </p>
-          </>
-        }
-      />
     </div>
   );
 }
