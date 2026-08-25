@@ -1,4 +1,4 @@
-import React, { useEffect, useState, lazy, Suspense } from 'react';
+import React, { useEffect, useState, useRef, lazy, Suspense } from 'react';
 import PlayerRosterService, { RosterEntry } from '../services/PlayerRosterService';
 import {
   IndicatorColor,
@@ -34,29 +34,85 @@ const NEXT_MODE: Record<IndicatorMode, IndicatorMode> = {
 
 interface DraftPlayerRosterProps {
   onRosterGenerated?: (roster: GeneratedRoster | null) => void;
+  onCurrentPlayersChange?: (players: RosterPlayer[]) => void;
+  onCoinResultChange?: (coin: CoinSide | null) => void;
+  initialShare?: {
+    players: RosterPlayer[];
+    roster: GeneratedRoster;
+    coin: CoinSide | null;
+  } | null;
 }
 
-const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({ onRosterGenerated }) => {
+const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({
+  onRosterGenerated,
+  onCurrentPlayersChange,
+  onCoinResultChange,
+  initialShare
+}) => {
   const { playSound } = useSound();
   const [roster, setRoster] = useState<RosterEntry[]>([]);
-  const [currentPlayers, setCurrentPlayers] = useState<CurrentPlayerRow[]>([]);
+  const [currentPlayers, setCurrentPlayers] = useState<CurrentPlayerRow[]>(initialShare?.players ?? []);
   const [newName, setNewName] = useState('');
-  const [generatedRoster, setGeneratedRoster] = useState<GeneratedRoster | null>(null);
+  const [generatedRoster, setGeneratedRoster] = useState<GeneratedRoster | null>(initialShare?.roster ?? null);
   const [generationError, setGenerationError] = useState<string | null>(null);
-  const [coinResult, setCoinResult] = useState<CoinSide | null>(null);
+  const [coinResult, setCoinResult] = useState<CoinSide | null>(initialShare?.coin ?? null);
   const [showCoinFlip, setShowCoinFlip] = useState(false);
 
+  // REQ-7 Decision 8: the clearing effect below fires on mount too. When
+  // hydrating from a share link, its first run must not wipe the roster/coin
+  // state just seeded above. A plain "skip once" flag isn't enough: React 18
+  // StrictMode (main.tsx) double-invokes mount effects in dev, and the flag
+  // would be consumed by the first phantom invocation, letting the second one
+  // clear everything for real. Guard on identity instead — skip whenever this
+  // effect sees the same `currentPlayers` reference it already handled.
+  const skipNextClearRef = useRef(!!initialShare);
+  const lastHandledPlayersRef = useRef<CurrentPlayerRow[] | null>(null);
+
   useEffect(() => {
-    setRoster(PlayerRosterService.load());
+    let loaded = PlayerRosterService.load();
+    if (initialShare) {
+      // REQ-7 R7: add shared players missing from the master roster, gated on
+      // absence so re-hydrating never bumps an existing player's pick count.
+      const known = new Set(loaded.map(e => e.name.toLowerCase()));
+      for (const p of initialShare.players) {
+        if (!known.has(p.name.toLowerCase())) {
+          loaded = PlayerRosterService.recordPick(p.name);
+          known.add(p.name.toLowerCase());
+        }
+      }
+    }
+    setRoster(loaded);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
+    if (lastHandledPlayersRef.current === currentPlayers) {
+      // Same array reference as last time this effect ran — a StrictMode
+      // phantom re-invocation, not a real change. Nothing to do.
+      return;
+    }
+    lastHandledPlayersRef.current = currentPlayers;
+
+    if (skipNextClearRef.current) {
+      skipNextClearRef.current = false;
+      return;
+    }
     setGeneratedRoster(null);
     setGenerationError(null);
     setCoinResult(null);
     setShowCoinFlip(false);
     onRosterGenerated?.(null);
   }, [currentPlayers]);
+
+  useEffect(() => {
+    onCurrentPlayersChange?.(currentPlayers);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPlayers]);
+
+  useEffect(() => {
+    onCoinResultChange?.(coinResult);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coinResult]);
 
   const isCurrent = (name: string) =>
     currentPlayers.some(p => p.name.toLowerCase() === name.toLowerCase());

@@ -3,7 +3,7 @@ import { Hero, Player, Team, GameLength } from '../types';
 import TimerInput from './TimerInput';
 import DraftPlayerRoster from './DraftPlayerRoster';
 import HeroPoolReveal from './HeroPoolReveal';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Check } from 'lucide-react';
 import EnhancedTooltip from './common/EnhancedTooltip';
 import TimerPhaseCard from './common/TimerPhaseCard';
 import { useSound } from '../context/SoundContext';
@@ -11,7 +11,9 @@ import dbService from '../services/DatabaseService';
 import SimpleTimerService from '../services/SimpleTimerService';
 import { heroes } from '../data/heroes';
 import { sampleRandomHeroes } from '../services/HeroPool';
-import { GeneratedRoster } from '../services/RosterGenerator';
+import { GeneratedRoster, RosterPlayer } from '../services/RosterGenerator';
+import type { CoinSide } from './CoinToss';
+import { parseShareFromSearch, buildShareUrl } from '../services/DraftShareService';
 
 interface GameSetupProps {
   strategyTime: number;
@@ -77,9 +79,18 @@ const GameSetup: React.FC<GameSetupProps> = ({
   onSimpleSoundCompleteEnabledChange
 }) => {
   const { playSound } = useSound();
-  // Default: Simple Timer open, Tracked Game collapsed
-  const [collapsed, setCollapsed] = useState<boolean>(true);
-  const [simpleCollapsed, setSimpleCollapsed] = useState<boolean>(false);
+
+  // REQ-7 R6/R8: parsed fresh each render (cheap, pure) — not memoized, since
+  // the `share` param is left in the URL (Decision 10) and doesn't change
+  // mid-session.
+  const shareResult = parseShareFromSearch(window.location.search);
+  const shareParamPresent = shareResult !== null;
+  const shareError = shareResult?.error ?? null;
+
+  // Default: Simple Timer open, Tracked Game collapsed — unless a share link
+  // is present, in which case force the Draft card open instead (Decision 6).
+  const [collapsed, setCollapsed] = useState<boolean>(!shareParamPresent);
+  const [simpleCollapsed, setSimpleCollapsed] = useState<boolean>(shareParamPresent);
   const [levelUpTime, setLevelUpTime] = useState<number>(120);
 
   // Set default values when component mounts if they're not already set
@@ -136,8 +147,14 @@ const GameSetup: React.FC<GameSetupProps> = ({
   const totalPlayers = titanCount + atlanteanCount;
 
   // Draft card's Blue/Red roster, lifted from DraftPlayerRoster (REQ-4/REQ-5)
-  const [generatedRoster, setGeneratedRoster] = useState<GeneratedRoster | null>(null);
-  const [revealedHeroes, setRevealedHeroes] = useState<Hero[] | null>(null);
+  const [generatedRoster, setGeneratedRoster] = useState<GeneratedRoster | null>(shareResult?.payload?.roster ?? null);
+  const [revealedHeroes, setRevealedHeroes] = useState<Hero[] | null>(shareResult?.payload?.heroes ?? null);
+
+  // REQ-7: coin result and Current Players, lifted the same way as
+  // generatedRoster, needed to assemble the Share Draft payload.
+  const [coinResult, setCoinResult] = useState<CoinSide | null>(shareResult?.payload?.coin ?? null);
+  const [currentPlayersForShare, setCurrentPlayersForShare] = useState<RosterPlayer[]>(shareResult?.payload?.players ?? []);
+  const [isShareCopied, setIsShareCopied] = useState(false);
 
   // R1: Draft Heroes is enabled once a Blue/Red roster has been generated.
   const canDraft = generatedRoster !== null;
@@ -162,6 +179,24 @@ const GameSetup: React.FC<GameSetupProps> = ({
     if (!canDraft) return;
     playSound('buttonClick');
     setRevealedHeroes(sampleRandomHeroes(heroes, 15));
+  };
+
+  const handleShareDraft = async () => {
+    if (!generatedRoster) return;
+    playSound('buttonClick');
+    const url = buildShareUrl({
+      players: currentPlayersForShare,
+      roster: generatedRoster,
+      coin: coinResult,
+      heroes: revealedHeroes
+    });
+    try {
+      await navigator.clipboard.writeText(url);
+      setIsShareCopied(true);
+      setTimeout(() => setIsShareCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy share link', err);
+    }
   };
 
   return (
@@ -317,8 +352,22 @@ const GameSetup: React.FC<GameSetupProps> = ({
       </div>
 
       <div className={`transition-all duration-300 ${collapsed ? 'max-h-0 overflow-hidden' : 'max-h-[2000px]'}`}>
+      {shareError && (
+        <div className="mb-4 px-4 py-3 rounded-md bg-red-900/40 border border-red-700 text-red-200 text-sm text-center">
+          {shareError}
+        </div>
+      )}
       <div className="mb-8">
-        <DraftPlayerRoster onRosterGenerated={setGeneratedRoster} />
+        <DraftPlayerRoster
+          onRosterGenerated={setGeneratedRoster}
+          onCurrentPlayersChange={setCurrentPlayersForShare}
+          onCoinResultChange={setCoinResult}
+          initialShare={
+            shareResult?.payload
+              ? { players: shareResult.payload.players, roster: shareResult.payload.roster, coin: shareResult.payload.coin }
+              : null
+          }
+        />
       </div>
       {/* Action Buttons */}
 <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -349,6 +398,21 @@ const GameSetup: React.FC<GameSetupProps> = ({
       <HeroPoolReveal heroes={revealedHeroes} />
     </div>
   )}
+
+  <div className="mt-6 flex justify-center">
+    <button
+      onClick={handleShareDraft}
+      disabled={!canDraft}
+      className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium text-white ${
+        canDraft
+          ? 'bg-purple-600 hover:bg-purple-500'
+          : 'bg-gray-600 cursor-not-allowed'
+      }`}
+    >
+      {isShareCopied ? <Check size={16} /> : <Copy size={16} />}
+      {isShareCopied ? 'Copied!' : 'Share Draft'}
+    </button>
+  </div>
 
   {/* Hero count info */}
   <div className="text-sm text-center w-full mt-4">
