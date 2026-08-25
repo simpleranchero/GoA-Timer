@@ -105,3 +105,20 @@ export function buildShareUrl(payload: DraftSharePayload): string {
   params.set(SHARE_PARAM, JSON.stringify(compact));
   return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
 }
+
+// Shortens a URL via TinyURL's free, unauthenticated, CORS-enabled endpoint —
+// confirmed (2026-08-25) to send Access-Control-Allow-Origin reflecting the
+// caller's origin, unlike is.gd/v.gd (no CORS headers) and bit.ly (requires
+// an OAuth token, which can't be embedded client-side safely). Returns null
+// on any failure (network error, non-OK response, or a non-URL response
+// body) so the caller can fall back to the un-shortened link.
+export async function shortenUrl(longUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`);
+    if (!res.ok) return null;
+    const text = (await res.text()).trim();
+    return text.startsWith('http') ? text : null;
+  } catch {
+    return null;
+  }
+}

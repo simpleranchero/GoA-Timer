@@ -3,7 +3,7 @@ import { Hero, Player, Team, GameLength } from '../types';
 import TimerInput from './TimerInput';
 import DraftPlayerRoster from './DraftPlayerRoster';
 import HeroPoolReveal from './HeroPoolReveal';
-import { ChevronDown, ChevronUp, Copy, Check } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Check, Loader2 } from 'lucide-react';
 import EnhancedTooltip from './common/EnhancedTooltip';
 import TimerPhaseCard from './common/TimerPhaseCard';
 import { useSound } from '../context/SoundContext';
@@ -13,7 +13,7 @@ import { heroes } from '../data/heroes';
 import { sampleRandomHeroes } from '../services/HeroPool';
 import { GeneratedRoster, RosterPlayer } from '../services/RosterGenerator';
 import type { CoinSide } from './CoinToss';
-import { parseShareFromSearch, buildShareUrl } from '../services/DraftShareService';
+import { parseShareFromSearch, buildShareUrl, shortenUrl } from '../services/DraftShareService';
 
 interface GameSetupProps {
   strategyTime: number;
@@ -154,7 +154,7 @@ const GameSetup: React.FC<GameSetupProps> = ({
   // generatedRoster, needed to assemble the Share Draft payload.
   const [coinResult, setCoinResult] = useState<CoinSide | null>(shareResult?.payload?.coin ?? null);
   const [currentPlayersForShare, setCurrentPlayersForShare] = useState<RosterPlayer[]>(shareResult?.payload?.players ?? []);
-  const [isShareCopied, setIsShareCopied] = useState(false);
+  const [shareState, setShareState] = useState<'idle' | 'sharing' | 'copied'>('idle');
 
   // R1: Draft Heroes is enabled once a Blue/Red roster has been generated.
   const canDraft = generatedRoster !== null;
@@ -182,21 +182,25 @@ const GameSetup: React.FC<GameSetupProps> = ({
   };
 
   const handleShareDraft = async () => {
-    if (!generatedRoster) return;
+    if (!generatedRoster || shareState === 'sharing') return;
     playSound('buttonClick');
-    const url = buildShareUrl({
+    setShareState('sharing');
+    const longUrl = buildShareUrl({
       players: currentPlayersForShare,
       roster: generatedRoster,
       coin: coinResult,
       heroes: revealedHeroes
     });
+    // Best-effort shorten via TinyURL; fall back to the full link on any failure
+    // (network error, offline, TinyURL down) so sharing still works either way.
+    const shortUrl = await shortenUrl(longUrl);
     try {
-      await navigator.clipboard.writeText(url);
-      setIsShareCopied(true);
-      setTimeout(() => setIsShareCopied(false), 2000);
+      await navigator.clipboard.writeText(shortUrl ?? longUrl);
     } catch (err) {
       console.error('Failed to copy share link', err);
     }
+    setShareState('copied');
+    setTimeout(() => setShareState('idle'), 2000);
   };
 
   return (
@@ -402,15 +406,17 @@ const GameSetup: React.FC<GameSetupProps> = ({
   <div className="mt-6 flex justify-center">
     <button
       onClick={handleShareDraft}
-      disabled={!canDraft}
+      disabled={!canDraft || shareState === 'sharing'}
       className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium text-white ${
         canDraft
           ? 'bg-purple-600 hover:bg-purple-500'
           : 'bg-gray-600 cursor-not-allowed'
-      }`}
+      } ${shareState === 'sharing' ? 'cursor-wait' : ''}`}
     >
-      {isShareCopied ? <Check size={16} /> : <Copy size={16} />}
-      {isShareCopied ? 'Copied!' : 'Share Draft'}
+      {shareState === 'sharing' && <Loader2 size={16} className="animate-spin" />}
+      {shareState === 'copied' && <Check size={16} />}
+      {shareState === 'idle' && <Copy size={16} />}
+      {shareState === 'sharing' ? 'Shortening…' : shareState === 'copied' ? 'Copied!' : 'Share Draft'}
     </button>
   </div>
 
