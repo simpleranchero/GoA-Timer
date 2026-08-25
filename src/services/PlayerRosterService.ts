@@ -56,7 +56,16 @@ export function recordPick(name: string): RosterEntry[] {
   return sorted;
 }
 
+// Removes `name` (case-insensitive match) and persists. Returns the full
+// roster, re-sorted by pick count.
+export function removePlayer(name: string): RosterEntry[] {
+  const entries = loadRoster().filter(e => e.name.toLowerCase() !== name.trim().toLowerCase());
+  saveRoster(entries);
+  return entries;
+}
+
 export default {
   load: loadRoster,
-  recordPick
+  recordPick,
+  removePlayer
 };

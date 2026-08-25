@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, lazy, Suspense } from 'react';
+import { Trash2 } from 'lucide-react';
 import PlayerRosterService, { RosterEntry } from '../services/PlayerRosterService';
 import {
   IndicatorColor,
@@ -136,6 +137,12 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({
     playSound('buttonClick');
   };
 
+  const handleRemoveFromRoster = (name: string) => {
+    if (!window.confirm(`Remove ${name} from the players list?`)) return;
+    setRoster(PlayerRosterService.removePlayer(name));
+    playSound('buttonClick');
+  };
+
   const cycleColor = (name: string) => {
     setCurrentPlayers(prev =>
       prev.map(p => (p.name === name ? { ...p, color: NEXT_COLOR[p.color] } : p))
@@ -180,16 +187,27 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({
         ) : (
           <div className="grid grid-rows-3 grid-flow-col auto-cols-[minmax(160px,1fr)] gap-2 overflow-x-auto bg-gray-700 rounded-md p-2">
             {roster.map(entry => (
-              <button
+              <div
                 key={entry.name}
-                onClick={() => addToCurrent(entry.name)}
-                className={`w-full text-left px-3 py-2 text-sm rounded hover:bg-gray-600 flex justify-between items-center bg-gray-800 ${
-                  isCurrent(entry.name) ? 'font-bold bg-gray-600' : ''
-                }`}
+                className={`flex items-center rounded bg-gray-800 ${isCurrent(entry.name) ? 'bg-gray-600' : ''}`}
               >
-                <span>{entry.name}</span>
-                <span className="text-xs text-gray-400">{entry.pickCount}</span>
-              </button>
+                <button
+                  onClick={() => addToCurrent(entry.name)}
+                  className={`flex-1 min-w-0 text-left px-3 py-2 text-sm rounded-l hover:bg-gray-600 flex justify-between items-center ${
+                    isCurrent(entry.name) ? 'font-bold' : ''
+                  }`}
+                >
+                  <span className="truncate">{entry.name}</span>
+                  <span className="text-xs text-gray-400 shrink-0 ml-2">{entry.pickCount}</span>
+                </button>
+                <button
+                  aria-label={`Remove ${entry.name} from players list`}
+                  onClick={() => handleRemoveFromRoster(entry.name)}
+                  className="shrink-0 px-2 py-2 text-gray-400 hover:text-red-400 rounded-r"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))}
           </div>
         )}
