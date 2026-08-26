@@ -1,8 +1,6 @@
-import { useCallback, useMemo } from 'react';
-import { useViewMode } from '../context/ViewModeContext';
+import { useCallback } from 'react';
 import { dbService, DBPlayer, DBMatch, DBMatchPlayer } from '../services/DatabaseService';
-import { CloudPlayer, CloudMatch, CloudMatchPlayer } from '../services/supabase/ShareService';
-import { Team, GameLength, HeroImpactResult } from '../types';
+import { Team, HeroImpactResult } from '../types';
 import { computeHeroImpactAsync } from '../services/HeroSkillService';
 import { heroes as allHeroesData } from '../data/heroes';
 import { rating, rate, ordinal } from 'openskill';
@@ -509,126 +507,37 @@ function getDisplayRating(player: DBPlayer): number {
 }
 
 /**
- * Convert cloud player data to local DBPlayer format
- */
-function cloudPlayerToLocal(cp: CloudPlayer): DBPlayer {
-  return {
-    id: cp.local_id || cp.name,
-    name: cp.name,
-    totalGames: cp.total_games,
-    wins: cp.wins,
-    losses: cp.losses,
-    elo: cp.elo,
-    mu: cp.mu,
-    sigma: cp.sigma,
-    ordinal: cp.ordinal,
-    lastPlayed: cp.last_played ? new Date(cp.last_played) : new Date(),
-    dateCreated: new Date(cp.date_created),
-    deviceId: cp.device_id || undefined,
-    level: cp.level || undefined,
-  };
-}
-
-/**
- * Convert cloud match data to local DBMatch format
- */
-function cloudMatchToLocal(cm: CloudMatch): DBMatch {
-  return {
-    id: cm.id,
-    date: new Date(cm.date),
-    winningTeam: cm.winning_team as Team,
-    gameLength: cm.game_length as GameLength,
-    doubleLanes: cm.double_lanes,
-    titanPlayers: cm.titan_players,
-    atlanteanPlayers: cm.atlantean_players,
-    deviceId: cm.device_id || undefined,
-  };
-}
-
-/**
- * Convert cloud match player data to local DBMatchPlayer format
- */
-function cloudMatchPlayerToLocal(cmp: CloudMatchPlayer): DBMatchPlayer {
-  return {
-    id: cmp.id,
-    matchId: cmp.match_id,
-    playerId: cmp.player_id,
-    team: cmp.team as Team,
-    heroId: cmp.hero_id,
-    heroName: cmp.hero_name,
-    heroRoles: cmp.hero_roles || [],
-    kills: cmp.kills,
-    deaths: cmp.deaths,
-    assists: cmp.assists,
-    goldEarned: cmp.gold_earned,
-    minionKills: cmp.minion_kills,
-    level: cmp.level,
-    deviceId: cmp.device_id || undefined,
-  };
-}
-
-/**
- * Hook that provides data source abstraction
- * Returns data from shared cloud data when in view mode,
- * otherwise returns data from local IndexedDB
+ * Hook that provides data source abstraction over local IndexedDB.
  */
 export function useDataSource() {
-  const { isViewMode, sharedData, isLoading: isViewModeLoading } = useViewMode();
-
-  // Convert shared data to local format (memoized)
-  const localPlayers = useMemo(() => {
-    if (!isViewMode || !sharedData?.players) return null;
-    return sharedData.players.map(cloudPlayerToLocal);
-  }, [isViewMode, sharedData?.players]);
-
-  const localMatches = useMemo(() => {
-    if (!isViewMode || !sharedData?.matches) return null;
-    return sharedData.matches.map(cloudMatchToLocal);
-  }, [isViewMode, sharedData?.matches]);
-
-  const localMatchPlayers = useMemo(() => {
-    if (!isViewMode || !sharedData?.matchPlayers) return null;
-    return sharedData.matchPlayers.map(cloudMatchPlayerToLocal);
-  }, [isViewMode, sharedData?.matchPlayers]);
+  // No cloud/view-mode data source exists anymore — kept as constants so
+  // every consumer that still destructures these keeps working unchanged.
+  const isViewMode = false;
+  const isViewModeLoading = false;
 
   // Get all players
   const getAllPlayers = useCallback(async (): Promise<DBPlayer[]> => {
-    if (isViewMode && localPlayers) {
-      return localPlayers;
-    }
     return dbService.getAllPlayers();
-  }, [isViewMode, localPlayers]);
+  }, []);
 
   // Get a specific player
   const getPlayer = useCallback(async (playerId: string): Promise<DBPlayer | undefined> => {
-    if (isViewMode && localPlayers) {
-      return localPlayers.find(p => p.id === playerId || p.name === playerId);
-    }
     const player = await dbService.getPlayer(playerId);
     return player ?? undefined;
-  }, [isViewMode, localPlayers]);
+  }, []);
 
   // Get all matches
   const getAllMatches = useCallback(async (): Promise<DBMatch[]> => {
-    if (isViewMode && localMatches) {
-      return localMatches;
-    }
     return dbService.getAllMatches();
-  }, [isViewMode, localMatches]);
+  }, []);
 
   // Get match players for a specific match
   const getMatchPlayers = useCallback(async (matchId: string): Promise<DBMatchPlayer[]> => {
-    if (isViewMode && localMatchPlayers) {
-      return localMatchPlayers.filter(mp => mp.matchId === matchId);
-    }
     return dbService.getMatchPlayers(matchId);
-  }, [isViewMode, localMatchPlayers]);
+  }, []);
 
   // Get all match players
   const getAllMatchPlayers = useCallback(async (): Promise<DBMatchPlayer[]> => {
-    if (isViewMode && localMatchPlayers) {
-      return localMatchPlayers;
-    }
     // Get all matches and then all their players
     const allMatches = await dbService.getAllMatches();
     const allMatchPlayers: DBMatchPlayer[] = [];
@@ -637,17 +546,10 @@ export function useDataSource() {
       allMatchPlayers.push(...players);
     }
     return allMatchPlayers;
-  }, [isViewMode, localMatchPlayers]);
+  }, []);
 
   // Get matches for a specific player
   const getPlayerMatches = useCallback(async (playerId: string): Promise<{match: DBMatch; matchPlayer: DBMatchPlayer}[]> => {
-    if (isViewMode && localMatches && localMatchPlayers) {
-      const playerMatchPlayers = localMatchPlayers.filter(mp => mp.playerId === playerId);
-      return playerMatchPlayers.map(mp => {
-        const match = localMatches.find(m => m.id === mp.matchId);
-        return match ? { match, matchPlayer: mp } : null;
-      }).filter(Boolean) as {match: DBMatch; matchPlayer: DBMatchPlayer}[];
-    }
     // dbService.getPlayerMatches returns DBMatchPlayer[], need to augment with match data
     const matchPlayers = await dbService.getPlayerMatches(playerId);
     const results: {match: DBMatch; matchPlayer: DBMatchPlayer}[] = [];
@@ -659,7 +561,7 @@ export function useDataSource() {
       }
     }
     return results;
-  }, [isViewMode, localMatches, localMatchPlayers]);
+  }, []);
 
   // Get hero stats (view mode aware)
   const getHeroStats = useCallback(async (
@@ -676,12 +578,12 @@ export function useDataSource() {
     });
   }, [getAllMatchPlayers, getAllMatches]);
 
-  // Get hero impact (view mode aware, cached)
+  // Get hero impact (cached)
   const getHeroImpact = useCallback(async (
     gameLengthFilter?: 'all' | 'quick' | 'long',
     playerCountFilter?: number | null
   ): Promise<HeroImpactResult[]> => {
-    const cacheKey = `${isViewMode ? 'view' : 'local'}_${gameLengthFilter ?? 'all'}_${playerCountFilter ?? 'any'}`;
+    const cacheKey = `local_${gameLengthFilter ?? 'all'}_${playerCountFilter ?? 'any'}`;
     if (
       localImpactCache &&
       localImpactCache.key === cacheKey &&
@@ -700,7 +602,7 @@ export function useDataSource() {
 
     localImpactCache = { data: results, timestamp: Date.now(), key: cacheKey };
     return results;
-  }, [getAllMatchPlayers, getAllMatches, getAllPlayers, isViewMode]);
+  }, [getAllMatchPlayers, getAllMatches, getAllPlayers]);
 
   // Get player relationship network (view mode aware)
   const getPlayerRelationshipNetwork = useCallback(async (
@@ -741,14 +643,11 @@ export function useDataSource() {
     return getDisplayRating(player);
   }, []);
 
-  // Get a specific match by ID (view mode aware)
+  // Get a specific match by ID
   const getMatch = useCallback(async (matchId: string): Promise<DBMatch | undefined> => {
-    if (isViewMode && localMatches) {
-      return localMatches.find(m => m.id === matchId);
-    }
     const allMatches = await dbService.getAllMatches();
     return allMatches.find(m => m.id === matchId);
-  }, [isViewMode, localMatches]);
+  }, []);
 
   // Get player stats for a specific player (view mode aware)
   // Returns the same structure as dbService.getPlayerStats
@@ -978,7 +877,7 @@ export function useDataSource() {
     lastPlayed: Date | null;
   }
 
-  // Get hero win rate over time (view mode aware)
+  // Get hero win rate over time
   const getHeroWinRateOverTime = useCallback(async (
     heroIds?: number[],
     minGames: number = 3,
@@ -1003,160 +902,10 @@ export function useDataSource() {
     }>;
     dateRange: { firstMatch: string; lastMatch: string } | null;
   }> => {
-    // In view mode, calculate from local data
-    if (isViewMode && localMatches && localMatchPlayers) {
-      let allMatches = filterMatches([...localMatches], {
-        startDate, endDate, gameLengthFilter, playerCountFilter
-      });
-
-      // Sort matches by date chronologically
-      allMatches.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-      if (allMatches.length === 0) {
-        return { heroes: [], dateRange: null };
-      }
-
-      // Create a set of valid match IDs for filtering
-      const validMatchIds = new Set(allMatches.map(m => m.id));
-      const allMatchPlayers = localMatchPlayers.filter(mp => validMatchIds.has(mp.matchId));
-      const matchesMap = new Map(allMatches.map(m => [m.id, m]));
-
-      // Build hero tracking data structure
-      const heroTracking = new Map<number, {
-        heroName: string;
-        icon: string;
-        matches: Array<{ date: string; won: boolean }>;
-      }>();
-
-      // Process each match player to build match history per hero
-      for (const matchPlayer of allMatchPlayers) {
-        const heroId = matchPlayer.heroId;
-        if (heroId === undefined || heroId === null) continue;
-
-        // Skip if filtering by heroIds and this hero is not in the list
-        if (heroIds && heroIds.length > 0 && !heroIds.includes(heroId)) continue;
-
-        const match = matchesMap.get(matchPlayer.matchId);
-        if (!match) continue;
-
-        if (!heroTracking.has(heroId)) {
-          heroTracking.set(heroId, {
-            heroName: matchPlayer.heroName,
-            icon: `heroes/${matchPlayer.heroName.toLowerCase().replace(/\s+/g, '')}.png`,
-            matches: []
-          });
-        }
-
-        const heroData = heroTracking.get(heroId)!;
-        const matchDate = new Date(match.date).toISOString().split('T')[0]; // YYYY-MM-DD
-        const won = matchPlayer.team === match.winningTeam;
-
-        heroData.matches.push({ date: matchDate, won });
-      }
-
-      // Convert to time series data with cumulative stats
-      const heroResults: Array<{
-        heroId: number;
-        heroName: string;
-        icon: string;
-        totalGames: number;
-        currentWinRate: number;
-        dataPoints: Array<{
-          date: string;
-          gamesPlayedTotal: number;
-          winsTotal: number;
-          winRate: number;
-          gamesPlayedOnDate: number;
-        }>;
-      }> = [];
-
-      for (const [heroId, heroData] of heroTracking.entries()) {
-        // Sort matches by date
-        heroData.matches.sort((a, b) => a.date.localeCompare(b.date));
-
-        // Group by date and calculate cumulative stats
-        const dateGroups = new Map<string, { wins: number; games: number }>();
-        for (const match of heroData.matches) {
-          if (!dateGroups.has(match.date)) {
-            dateGroups.set(match.date, { wins: 0, games: 0 });
-          }
-          const group = dateGroups.get(match.date)!;
-          group.games++;
-          if (match.won) group.wins++;
-        }
-
-        // Build cumulative data points
-        const dataPoints: Array<{
-          date: string;
-          gamesPlayedTotal: number;
-          winsTotal: number;
-          winRate: number;
-          gamesPlayedOnDate: number;
-        }> = [];
-
-        let cumulativeGames = 0;
-        let cumulativeWins = 0;
-
-        // Sort dates and process chronologically
-        const sortedDates = Array.from(dateGroups.keys()).sort();
-        for (const date of sortedDates) {
-          const dayStats = dateGroups.get(date)!;
-          cumulativeGames += dayStats.games;
-          cumulativeWins += dayStats.wins;
-
-          dataPoints.push({
-            date,
-            gamesPlayedTotal: cumulativeGames,
-            winsTotal: cumulativeWins,
-            winRate: cumulativeGames > 0 ? (cumulativeWins / cumulativeGames) * 100 : 0,
-            gamesPlayedOnDate: dayStats.games
-          });
-        }
-
-        // Filter data points to only show from minGames onwards
-        const filteredDataPoints = dataPoints.filter(dp => dp.gamesPlayedTotal >= minGames);
-
-        // Only include heroes that have data points meeting the threshold
-        if (filteredDataPoints.length > 0) {
-          heroResults.push({
-            heroId,
-            heroName: heroData.heroName,
-            icon: heroData.icon,
-            totalGames: cumulativeGames,
-            currentWinRate: cumulativeGames > 0 ? (cumulativeWins / cumulativeGames) * 100 : 0,
-            dataPoints: filteredDataPoints
-          });
-        }
-      }
-
-      // Sort heroes by total games descending
-      heroResults.sort((a, b) => b.totalGames - a.totalGames);
-
-      // Enrich with icon data from heroes.ts
-      for (const heroResult of heroResults) {
-        const heroData = allHeroesData.find(h => h.name === heroResult.heroName);
-        if (heroData) {
-          heroResult.icon = heroData.icon;
-        }
-      }
-
-      // Calculate overall date range
-      const allDates = heroResults.flatMap(h => h.dataPoints.map(dp => dp.date));
-      const dateRange = allDates.length > 0
-        ? {
-            firstMatch: allDates.reduce((min, d) => d < min ? d : min),
-            lastMatch: allDates.reduce((max, d) => d > max ? d : max)
-          }
-        : null;
-
-      return { heroes: heroResults, dateRange };
-    }
-
-    // Not in view mode - use database service
     return dbService.getHeroWinRateOverTime(heroIds, minGames, startDate, endDate, gameLengthFilter, playerCountFilter);
-  }, [isViewMode, localMatches, localMatchPlayers]);
+  }, []);
 
-  // Get hero relationship network (view mode aware)
+  // Get hero relationship network
   const getHeroRelationshipNetwork = useCallback(async (
     heroIds: number[],
     minGames: number = 1,
@@ -1172,97 +921,8 @@ export function useDataSource() {
     opponentWins: number;
     opponentLosses: number;
   }[]> => {
-    // In view mode, calculate from local data
-    if (isViewMode && localMatches && localMatchPlayers) {
-      const allMatches = filterMatches([...localMatches], {
-        startDate, endDate, gameLengthFilter, playerCountFilter
-      });
-
-      if (allMatches.length === 0) {
-        return [];
-      }
-
-      // Create a set of valid match IDs for filtering
-      const validMatchIds = new Set(allMatches.map(m => m.id));
-      const allMatchPlayers = localMatchPlayers.filter(mp => validMatchIds.has(mp.matchId));
-
-      // Create a set of selected hero IDs for filtering
-      const selectedHeroIds = new Set(heroIds);
-
-      // Track relationships: key is "heroId-relatedHeroId"
-      const relationshipMap = new Map<string, {
-        heroId: number;
-        relatedHeroId: number;
-        teammateWins: number;
-        teammateLosses: number;
-        opponentWins: number;
-        opponentLosses: number;
-      }>();
-
-      // Process each match
-      for (const match of allMatches) {
-        const matchHeroes = allMatchPlayers.filter(mp => mp.matchId === match.id);
-
-        // For each hero in the match
-        for (const hero1 of matchHeroes) {
-          if (hero1.heroId === undefined || hero1.heroId === null) continue;
-          if (!selectedHeroIds.has(hero1.heroId)) continue;
-
-          const hero1Won = hero1.team === match.winningTeam;
-
-          // Compare with every other hero in the match
-          for (const hero2 of matchHeroes) {
-            if (hero2.heroId === undefined || hero2.heroId === null) continue;
-            if (hero1.heroId === hero2.heroId) continue;
-            if (!selectedHeroIds.has(hero2.heroId)) continue;
-
-            const key = `${hero1.heroId}-${hero2.heroId}`;
-
-            if (!relationshipMap.has(key)) {
-              relationshipMap.set(key, {
-                heroId: hero1.heroId,
-                relatedHeroId: hero2.heroId,
-                teammateWins: 0,
-                teammateLosses: 0,
-                opponentWins: 0,
-                opponentLosses: 0
-              });
-            }
-
-            const rel = relationshipMap.get(key)!;
-            const sameTeam = hero1.team === hero2.team;
-
-            if (sameTeam) {
-              // Teammates
-              if (hero1Won) {
-                rel.teammateWins++;
-              } else {
-                rel.teammateLosses++;
-              }
-            } else {
-              // Opponents
-              if (hero1Won) {
-                rel.opponentWins++;  // hero1 beat hero2
-              } else {
-                rel.opponentLosses++; // hero1 lost to hero2
-              }
-            }
-          }
-        }
-      }
-
-      // Filter by minGames and convert to array
-      const relationships = Array.from(relationshipMap.values()).filter(rel => {
-        const totalGames = rel.teammateWins + rel.teammateLosses + rel.opponentWins + rel.opponentLosses;
-        return totalGames >= minGames;
-      });
-
-      return relationships;
-    }
-
-    // Not in view mode - use database service
     return dbService.getHeroRelationshipNetwork(heroIds, minGames, startDate, endDate, gameLengthFilter, playerCountFilter);
-  }, [isViewMode, localMatches, localMatchPlayers]);
+  }, []);
 
   // Get filtered player stats (view mode aware)
   const getFilteredPlayerStats = useCallback(async (

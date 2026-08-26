@@ -8,7 +8,6 @@ import EnhancedTooltip from '../common/EnhancedTooltip';
 import { EditPlayerDataModal } from './EditPlayerDataModal';
 import dbService from '../../services/DatabaseService';
 import { useSound } from '../../context/SoundContext';
-import { useViewMode } from '../../context/ViewModeContext';
 // LEGACY: P2P Connection Context - kept for potential future use
 // import { useConnection } from '../../context/ConnectionContext';
 export type MatchesView = 'menu' | 'player-stats' | 'detailed-player-stats' | 'hero-stats' | 'detailed-hero-stats' | 'match-history' | 'match-maker' | 'record-match' | 'hero-info' | 'skill-over-time';
@@ -19,7 +18,6 @@ interface MatchesMenuProps {
 
 const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
   const { playSound } = useSound();
-  const { isViewMode, sharedData, isLoading: isViewModeLoading } = useViewMode();
   // LEGACY: P2P Connection State
   // const { connectionState } = useConnection();
   const [hasData, setHasData] = useState<boolean>(false);
@@ -39,17 +37,10 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
   const [hasZeroGamePlayers, setHasZeroGamePlayers] = useState<boolean>(false);
   
   
-  // Check if we have any match data (view mode aware)
+  // Check if we have any match data
   const checkForMatchData = async () => {
-    if (isViewMode && sharedData) {
-      // In view mode, check if shared data has matches
-      const hasMatchData = sharedData.matches && sharedData.matches.length > 0;
-      setHasData(hasMatchData);
-    } else if (!isViewMode) {
-      // In normal mode, check IndexedDB
-      const hasMatchData = await dbService.hasMatchData();
-      setHasData(hasMatchData);
-    }
+    const hasMatchData = await dbService.hasMatchData();
+    setHasData(hasMatchData);
   };
 
   // Check if there are players with zero games
@@ -63,17 +54,11 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
     }
   };
   
-  // Check data on component mount and when view mode changes
+  // Check data on component mount
   useEffect(() => {
-    // Wait for view mode loading to complete before checking data
-    if (isViewModeLoading) return;
-
     checkForMatchData();
-    // Only check for zero game players in non-view mode (local data)
-    if (!isViewMode) {
-      checkForZeroGamePlayers();
-    }
-  }, [isViewModeLoading, isViewMode, sharedData]);
+    checkForZeroGamePlayers();
+  }, []);
   
   // Handle menu navigation with sound
   const handleNavigate = (view: MatchesView) => {
@@ -244,18 +229,13 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
   return (
     <div className="bg-gray-800 rounded-lg p-6">
       <div className="flex justify-between items-center mb-6">
-        {/* Hide Back to Setup in view mode - viewers should use Exit button in banner */}
-        {!isViewMode ? (
-          <button
-            onClick={handleBack}
-            className="flex items-center text-gray-300 hover:text-white"
-          >
-            <ChevronLeft size={20} className="mr-1" />
-            <span>Back to Setup</span>
-          </button>
-        ) : (
-          <div /> /* Placeholder to maintain layout */
-        )}
+        <button
+          onClick={handleBack}
+          className="flex items-center text-gray-300 hover:text-white"
+        >
+          <ChevronLeft size={20} className="mr-1" />
+          <span>Back to Setup</span>
+        </button>
         <h2 className="text-2xl font-bold">Match Statistics</h2>
       </div>
       
@@ -330,8 +310,7 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
           )}
         </div>
         
-        {/* Record Match - Hidden in view mode */}
-        {!isViewMode && (
+        {/* Record Match */}
         <div
           className="bg-gray-700 hover:bg-gray-600 rounded-lg p-6 cursor-pointer transition-colors"
           onClick={() => handleNavigate('record-match')}
@@ -344,10 +323,8 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
             Manually log match results for games played outside the application.
           </p>
         </div>
-        )}
-        
-        {/* Match Maker - Hidden in view mode */}
-        {!isViewMode && (
+
+        {/* Match Maker */}
         <div
           className={`bg-gray-700 hover:bg-gray-600 rounded-lg p-6 cursor-pointer transition-colors ${
             !hasData ? 'opacity-50 pointer-events-none' : ''
@@ -369,7 +346,6 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
             </div>
           )}
         </div>
-        )}
         
         {/* NEW COMPONENT: Hero Info */}
         <div 
@@ -388,8 +364,7 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
         </div>
       </div>
       
-      {/* Data Management Section - Hidden in view mode */}
-      {!isViewMode && (
+      {/* Data Management Section */}
       <div className="mt-8 border-t border-gray-700 pt-6">
         <div className="flex items-center mb-4">
           <h3 className="text-xl font-bold">Data Management</h3>
@@ -614,14 +589,13 @@ const MatchesMenu: React.FC<MatchesMenuProps> = ({ onBack, onNavigate }) => {
                 Match data is stored locally on this device using your browser's storage. It is recommended you back up your data locally with Export Data (in case your browser's storage gets cleared).
               </p>
               <p>
-                Use the Cloud Sync feature to share your stats publicly, or manually import and export data to transfer
-                match records between devices or merge records from different devices (e.g. with friends).
+                Manually import and export data to transfer match records between devices or merge records
+                from different devices (e.g. with friends).
               </p>
             </div>
           </div>
         </div>
       </div>
-      )}
 
       {/* LEGACY: P2P Connection Modal - Hidden in favor of cloud sharing
       <ConnectionModal

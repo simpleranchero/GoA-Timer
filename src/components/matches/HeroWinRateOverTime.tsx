@@ -1,15 +1,12 @@
 // src/components/matches/HeroWinRateOverTime.tsx
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { ChevronLeft, TrendingUp, Info, Filter, ChevronDown, ChevronUp, Globe, Users, Loader2 } from 'lucide-react';
+import { ChevronLeft, TrendingUp, Info, Filter, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { VictoryChart, VictoryLine, VictoryScatter, VictoryAxis } from 'victory';
-import { GlobalStatsService } from '../../services/supabase/GlobalStatsService';
-import { isSupabaseConfigured } from '../../services/supabase/SupabaseClient';
 import { useSound } from '../../context/SoundContext';
 import { useDataSource } from '../../hooks/useDataSource';
 
 interface HeroWinRateOverTimeProps {
   onBack: () => void;
-  initialStatsMode?: 'local' | 'global';
   inheritedMinGames?: number;
   inheritedDateRange?: { startDate?: Date; endDate?: Date };
   inheritedGameLengthFilter?: 'all' | 'quick' | 'long';
@@ -38,7 +35,6 @@ interface HeroWinRateData {
 
 const HeroWinRateOverTime: React.FC<HeroWinRateOverTimeProps> = ({
   onBack,
-  initialStatsMode = 'local',
   inheritedMinGames,
   inheritedDateRange,
   inheritedGameLengthFilter = 'all',
@@ -53,12 +49,6 @@ const HeroWinRateOverTime: React.FC<HeroWinRateOverTimeProps> = ({
   const [showFilters, setShowFilters] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [hoveredHero, setHoveredHero] = useState<number | null>(null);
-
-  // Stats mode toggle
-  const [statsMode, setStatsMode] = useState<'local' | 'global'>(initialStatsMode);
-  const [globalLoading, setGlobalLoading] = useState(false);
-  const [globalError, setGlobalError] = useState<string | null>(null);
-  const cloudAvailable = isSupabaseConfigured();
 
   // Min games filter - initialize from inherited or localStorage
   const [minGames, setMinGames] = useState<number>(() => {
@@ -103,81 +93,36 @@ const HeroWinRateOverTime: React.FC<HeroWinRateOverTimeProps> = ({
     if (isViewModeLoading) return;
 
     const loadData = async () => {
-      if (statsMode === 'local') {
-        setLoading(true);
-        try {
-          const startDate = dateRange.start ? new Date(dateRange.start) : undefined;
-          const endDate = dateRange.end ? new Date(dateRange.end + 'T23:59:59') : undefined;
+      setLoading(true);
+      try {
+        const startDate = dateRange.start ? new Date(dateRange.start) : undefined;
+        const endDate = dateRange.end ? new Date(dateRange.end + 'T23:59:59') : undefined;
 
-          const data = await getHeroWinRateOverTime(undefined, minGames, startDate, endDate, inheritedGameLengthFilter, inheritedPlayerCountFilter);
-          setHeroData(data);
+        const data = await getHeroWinRateOverTime(undefined, minGames, startDate, endDate, inheritedGameLengthFilter, inheritedPlayerCountFilter);
+        setHeroData(data);
 
-          // Auto-select top 5 heroes if none selected
-          if (selectedHeroes.size === 0 && data.heroes.length > 0) {
-            const topHeroes = data.heroes.slice(0, 5).map(h => h.heroId);
-            setSelectedHeroes(new Set(topHeroes));
-          }
-
-          // Generate colors
-          const colors = generateColors(data.heroes.length);
-          const newColorMap: Record<number, string> = {};
-          data.heroes.forEach((hero, idx) => {
-            newColorMap[hero.heroId] = colors[idx];
-          });
-          setColorMap(newColorMap);
-        } catch (error) {
-          console.error('Error loading hero win rate data:', error);
-        } finally {
-          setLoading(false);
+        // Auto-select top 5 heroes if none selected
+        if (selectedHeroes.size === 0 && data.heroes.length > 0) {
+          const topHeroes = data.heroes.slice(0, 5).map(h => h.heroId);
+          setSelectedHeroes(new Set(topHeroes));
         }
-      } else {
-        // Global mode
-        setGlobalLoading(true);
-        setGlobalError(null);
-        try {
-          const startDate = dateRange.start ? new Date(dateRange.start) : null;
-          const endDate = dateRange.end ? new Date(dateRange.end + 'T23:59:59') : null;
 
-          const result = await GlobalStatsService.getGlobalHeroStatsOverTime(
-            undefined,
-            minGames,
-            startDate,
-            endDate,
-            inheritedGameLengthFilter === 'all' ? null : inheritedGameLengthFilter,
-            inheritedPlayerCountFilter
-          );
-
-          if (result.success && result.data) {
-            setHeroData(result.data);
-
-            // Auto-select top 5 heroes if none selected
-            if (selectedHeroes.size === 0 && result.data.heroes.length > 0) {
-              const topHeroes = result.data.heroes.slice(0, 5).map(h => h.heroId);
-              setSelectedHeroes(new Set(topHeroes));
-            }
-
-            // Generate colors
-            const colors = generateColors(result.data.heroes.length);
-            const newColorMap: Record<number, string> = {};
-            result.data.heroes.forEach((hero, idx) => {
-              newColorMap[hero.heroId] = colors[idx];
-            });
-            setColorMap(newColorMap);
-          } else {
-            setGlobalError(result.error || 'Failed to load global data');
-          }
-        } catch (error) {
-          console.error('Error loading global hero win rate data:', error);
-          setGlobalError(error instanceof Error ? error.message : 'An unexpected error occurred');
-        } finally {
-          setGlobalLoading(false);
-          setLoading(false);
-        }
+        // Generate colors
+        const colors = generateColors(data.heroes.length);
+        const newColorMap: Record<number, string> = {};
+        data.heroes.forEach((hero, idx) => {
+          newColorMap[hero.heroId] = colors[idx];
+        });
+        setColorMap(newColorMap);
+      } catch (error) {
+        console.error('Error loading hero win rate data:', error);
+      } finally {
+        setLoading(false);
       }
     };
 
     loadData();
-  }, [statsMode, minGames, dateRange.start, dateRange.end, inheritedGameLengthFilter, inheritedPlayerCountFilter, isViewModeLoading, getHeroWinRateOverTime]);
+  }, [minGames, dateRange.start, dateRange.end, inheritedGameLengthFilter, inheritedPlayerCountFilter, isViewModeLoading, getHeroWinRateOverTime]);
 
   const handleBack = useCallback(() => {
     playSound('buttonClick');
@@ -299,7 +244,7 @@ const HeroWinRateOverTime: React.FC<HeroWinRateOverTimeProps> = ({
     return [minDate - dayMs, maxDate + dayMs];
   }, [heroData, selectedHeroes]);
 
-  const isLoading = loading || globalLoading || isViewModeLoading;
+  const isLoading = loading || isViewModeLoading;
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
@@ -315,61 +260,6 @@ const HeroWinRateOverTime: React.FC<HeroWinRateOverTimeProps> = ({
 
         <h2 className="text-xl sm:text-2xl font-bold">Hero Win Rate Over Time</h2>
       </div>
-
-      {/* Stats Mode Toggle */}
-      {cloudAvailable && (
-        <div className="mb-4 no-screenshot">
-          <div className="flex items-center justify-center gap-2">
-            <button
-              onClick={() => {
-                playSound('buttonClick');
-                setStatsMode('local');
-              }}
-              className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
-                statsMode === 'local'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              <Users size={18} className="mr-2" />
-              Play Group
-            </button>
-            <button
-              onClick={() => {
-                playSound('buttonClick');
-                setStatsMode('global');
-              }}
-              className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
-                statsMode === 'global'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              <Globe size={18} className="mr-2" />
-              Global
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Global Stats Banner */}
-      {statsMode === 'global' && (
-        <div className="mb-4 p-3 bg-green-900/30 border border-green-700/50 rounded-lg no-screenshot">
-          <div className="flex items-center">
-            <Globe size={18} className="mr-2 text-green-400 flex-shrink-0" />
-            <span className="text-sm text-green-200">
-              Viewing global statistics from all players
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Global Error */}
-      {statsMode === 'global' && globalError && (
-        <div className="mb-4 p-3 bg-red-900/30 border border-red-700/50 rounded-lg no-screenshot">
-          <p className="text-sm text-red-200">{globalError}</p>
-        </div>
-      )}
 
       {/* Inherited Filters Banner */}
       {usingInheritedFilters && (

@@ -1,17 +1,14 @@
 // src/components/matches/HeroRelationshipGraph.tsx
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ChevronLeft, Filter, ChevronDown, ChevronUp, Globe, Users, Loader2, Network, Info } from 'lucide-react';
+import { ChevronLeft, Filter, ChevronDown, ChevronUp, Loader2, Network, Info } from 'lucide-react';
 import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
 import * as d3 from 'd3-force';
-import { GlobalStatsService } from '../../services/supabase/GlobalStatsService';
-import { isSupabaseConfigured } from '../../services/supabase/SupabaseClient';
 import { useSound } from '../../context/SoundContext';
 import { heroes as allHeroes } from '../../data/heroes';
 import { useDataSource } from '../../hooks/useDataSource';
 
 interface HeroRelationshipGraphProps {
   onBack: () => void;
-  initialStatsMode?: 'local' | 'global';
   inheritedMinGames?: number;
   inheritedDateRange?: { startDate?: Date; endDate?: Date };
   inheritedGameLengthFilter?: 'all' | 'quick' | 'long';
@@ -66,7 +63,7 @@ const edgeLabels: Record<EdgeType, string> = {
   opponent_lost: 'Lost to'
 };
 
-const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, initialStatsMode = 'local', inheritedMinGames = 1, inheritedDateRange, inheritedGameLengthFilter = 'all', inheritedPlayerCountFilter = null }) => {
+const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, inheritedMinGames = 1, inheritedDateRange, inheritedGameLengthFilter = 'all', inheritedPlayerCountFilter = null }) => {
   const { playSound } = useSound();
   const { isViewModeLoading, getHeroRelationshipNetwork } = useDataSource();
   const [loading, setLoading] = useState(false);
@@ -75,12 +72,6 @@ const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, i
   const [showFilters, setShowFilters] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-
-  // Stats mode toggle
-  const [statsMode, setStatsMode] = useState<'local' | 'global'>(initialStatsMode);
-  const [globalLoading, setGlobalLoading] = useState(false);
-  const [globalError, setGlobalError] = useState<string | null>(null);
-  const cloudAvailable = isSupabaseConfigured();
 
   // Min games for relationships from inherited filter
   const minGames = inheritedMinGames;
@@ -188,35 +179,20 @@ const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, i
       setLoadingHeroes(true);
       try {
         const allHeroIds = allHeroes.map(h => h.id);
-        let heroIdsWithData = new Set<number>();
+        const heroIdsWithData = new Set<number>();
 
-        if (statsMode === 'local') {
-          const relationships = await getHeroRelationshipNetwork(
-            allHeroIds,
-            minGames,
-            dateRange.startDate,
-            dateRange.endDate,
-            inheritedGameLengthFilter,
-            inheritedPlayerCountFilter
-          );
-          relationships.forEach(rel => {
-            heroIdsWithData.add(rel.heroId);
-            heroIdsWithData.add(rel.relatedHeroId);
-          });
-        } else {
-          const result = await GlobalStatsService.getHeroRelationshipNetwork(
-            allHeroIds,
-            minGames,
-            inheritedGameLengthFilter === 'all' ? null : inheritedGameLengthFilter,
-            inheritedPlayerCountFilter
-          );
-          if (result.success && result.data) {
-            result.data.forEach(rel => {
-              heroIdsWithData.add(rel.heroId);
-              heroIdsWithData.add(rel.relatedHeroId);
-            });
-          }
-        }
+        const relationships = await getHeroRelationshipNetwork(
+          allHeroIds,
+          minGames,
+          dateRange.startDate,
+          dateRange.endDate,
+          inheritedGameLengthFilter,
+          inheritedPlayerCountFilter
+        );
+        relationships.forEach(rel => {
+          heroIdsWithData.add(rel.heroId);
+          heroIdsWithData.add(rel.relatedHeroId);
+        });
 
         // Filter to only heroes with data
         const filteredHeroes = allHeroes.filter(h => heroIdsWithData.has(h.id));
@@ -231,7 +207,7 @@ const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, i
     };
 
     loadAvailableHeroes();
-  }, [statsMode, minGames, dateRange.startDate, dateRange.endDate, inheritedGameLengthFilter, inheritedPlayerCountFilter, isViewModeLoading, getHeroRelationshipNetwork]);
+  }, [minGames, dateRange.startDate, dateRange.endDate, inheritedGameLengthFilter, inheritedPlayerCountFilter, isViewModeLoading, getHeroRelationshipNetwork]);
 
   // Preload hero images
   useEffect(() => {
@@ -360,51 +336,27 @@ const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, i
         pendingCameraRestoreRef.current = true;
       }
 
-      if (statsMode === 'local') {
-        setLoading(true);
-        try {
-          const relationships = await getHeroRelationshipNetwork(
-            heroIds,
-            minGames,
-            dateRange.startDate,
-            dateRange.endDate,
-            inheritedGameLengthFilter,
-            inheritedPlayerCountFilter
-          );
-          const data = buildGraphData(heroIds, relationships);
-          setGraphData(data);
-        } catch (error) {
-          console.error('Error loading relationship data:', error);
-        } finally {
-          setLoading(false);
-        }
-      } else {
-        setGlobalLoading(true);
-        setGlobalError(null);
-        try {
-          const result = await GlobalStatsService.getHeroRelationshipNetwork(
-            heroIds,
-            minGames,
-            inheritedGameLengthFilter === 'all' ? null : inheritedGameLengthFilter,
-            inheritedPlayerCountFilter
-          );
-          if (result.success && result.data) {
-            const data = buildGraphData(heroIds, result.data);
-            setGraphData(data);
-          } else {
-            setGlobalError(result.error || 'Failed to load global data');
-          }
-        } catch (error) {
-          console.error('Error loading global relationship data:', error);
-          setGlobalError(error instanceof Error ? error.message : 'An unexpected error occurred');
-        } finally {
-          setGlobalLoading(false);
-        }
+      setLoading(true);
+      try {
+        const relationships = await getHeroRelationshipNetwork(
+          heroIds,
+          minGames,
+          dateRange.startDate,
+          dateRange.endDate,
+          inheritedGameLengthFilter,
+          inheritedPlayerCountFilter
+        );
+        const data = buildGraphData(heroIds, relationships);
+        setGraphData(data);
+      } catch (error) {
+        console.error('Error loading relationship data:', error);
+      } finally {
+        setLoading(false);
       }
     };
 
     loadData();
-  }, [selectedHeroes, statsMode, minGames, dateRange.startDate, dateRange.endDate, inheritedGameLengthFilter, inheritedPlayerCountFilter, isViewModeLoading, getHeroRelationshipNetwork]);
+  }, [selectedHeroes, minGames, dateRange.startDate, dateRange.endDate, inheritedGameLengthFilter, inheritedPlayerCountFilter, isViewModeLoading, getHeroRelationshipNetwork]);
 
   // Build graph data from relationships - preserves existing node positions
   const buildGraphData = useCallback((
@@ -748,7 +700,7 @@ const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, i
     }
   }, [graphData.nodes, dimensions.width, dimensions.height]);
 
-  const isLoading = loading || globalLoading || isViewModeLoading;
+  const isLoading = loading || isViewModeLoading;
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
@@ -767,61 +719,6 @@ const HeroRelationshipGraph: React.FC<HeroRelationshipGraphProps> = ({ onBack, i
           Hero Relationship Network
         </h2>
       </div>
-
-      {/* Stats Mode Toggle */}
-      {cloudAvailable && (
-        <div className="mb-4 no-screenshot">
-          <div className="flex items-center justify-center gap-2">
-            <button
-              onClick={() => {
-                playSound('buttonClick');
-                setStatsMode('local');
-              }}
-              className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
-                statsMode === 'local'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              <Users size={18} className="mr-2" />
-              Play Group
-            </button>
-            <button
-              onClick={() => {
-                playSound('buttonClick');
-                setStatsMode('global');
-              }}
-              className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
-                statsMode === 'global'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              <Globe size={18} className="mr-2" />
-              Global
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Global Stats Banner */}
-      {statsMode === 'global' && (
-        <div className="mb-4 p-3 bg-green-900/30 border border-green-700/50 rounded-lg no-screenshot">
-          <div className="flex items-center">
-            <Globe size={18} className="mr-2 text-green-400 flex-shrink-0" />
-            <span className="text-sm text-green-200">
-              Viewing global statistics from all players
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Global Error */}
-      {statsMode === 'global' && globalError && (
-        <div className="mb-4 p-3 bg-red-900/30 border border-red-700/50 rounded-lg no-screenshot">
-          <p className="text-sm text-red-200">{globalError}</p>
-        </div>
-      )}
 
       {/* Inherited Filters Banner */}
       {usingInheritedFilters && (

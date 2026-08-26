@@ -2,7 +2,6 @@
 import { Team, GameLength, VictoryType } from '../types';
 import { rating, rate, ordinal } from 'openskill';
 import NormalDistribution from 'normal-distribution';
-import { CloudSyncService } from './supabase/CloudSyncService';
 import { filterMatches } from '../shared/utils/matchFilters';
 
 // Database configuration
@@ -1152,7 +1151,6 @@ class DatabaseService {
 
   /**
    * Delete a match and its associated player records.
-   * Also triggers cloud deletion to sync tombstone across devices.
    */
   async deleteMatch(matchId: string): Promise<void> {
     if (!this.db) await this.initialize();
@@ -1169,12 +1167,6 @@ class DatabaseService {
       await this.deleteMatchAndPlayers(matchId, matchPlayers);
 
       await this.recalculatePlayerStats();
-
-      // Trigger cloud deletion (non-blocking) to create tombstone
-      CloudSyncService.deleteMatchFromCloud(matchId).catch(error => {
-        console.error('[DatabaseService] Cloud deletion failed:', error);
-      });
-
     } catch (error) {
       console.error('Error deleting match:', error);
       throw error;
@@ -1210,8 +1202,7 @@ class DatabaseService {
   }
 
   /**
-   * Delete a match and its player records without triggering cloud deletion.
-   * Used when applying tombstones from cloud sync.
+   * Delete a match and its player records, returning whether it existed locally.
    */
   async deleteMatchAndPlayersOnly(matchId: string): Promise<boolean> {
     if (!this.db) await this.initialize();
@@ -1667,9 +1658,6 @@ class DatabaseService {
     });
     
     await Promise.all(playerUpdatePromises);
-
-    // Trigger auto-upload to cloud if enabled
-    CloudSyncService.triggerAutoUpload();
 
     return match.id;
   }

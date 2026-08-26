@@ -1,7 +1,6 @@
 import React from 'react';
 import { X, Sparkles } from 'lucide-react';
 import { useSound } from '../../context/SoundContext';
-import { useViewMode } from '../../context/ViewModeContext';
 
 interface FeatureAnnouncementProps {
   id: string;
@@ -47,7 +46,6 @@ export function dismissAnnouncement(id: string): void {
 /**
  * FeatureAnnouncement - A popup to announce new features to users.
  * Only shows once per announcement ID, then stores dismissal in localStorage.
- * Does not show or persist dismissal in View Only mode.
  */
 const FeatureAnnouncement: React.FC<FeatureAnnouncementProps> = ({
   id,
@@ -57,17 +55,12 @@ const FeatureAnnouncement: React.FC<FeatureAnnouncementProps> = ({
   buttonText = 'Got it!',
 }) => {
   const { playSound } = useSound();
-  const { isViewMode } = useViewMode();
 
-  // Don't show announcements in View Only mode
-  const [isVisible, setIsVisible] = React.useState(() => !isViewMode && !isAnnouncementDismissed(id));
+  const [isVisible, setIsVisible] = React.useState(() => !isAnnouncementDismissed(id));
 
   const handleDismiss = () => {
     playSound('buttonClick');
-    // Only persist dismissal if not in view mode
-    if (!isViewMode) {
-      dismissAnnouncement(id);
-    }
+    dismissAnnouncement(id);
     setIsVisible(false);
   };
 

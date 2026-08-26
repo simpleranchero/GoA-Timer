@@ -12,10 +12,7 @@ import migrationService from './services/MigrationService';
 import SimpleTimerService from './services/SimpleTimerService';
 import { SoundProvider, useSound } from './context/SoundContext';
 import { ConnectionProvider } from './context/ConnectionContext';
-import { AuthProvider } from './context/AuthContext';
-import { ViewModeProvider, useViewMode } from './context/ViewModeContext';
 import { StatsFilterProvider } from './context/StatsFilterContext';
-import ViewModeBanner from './components/common/ViewModeBanner';
 import { PlayerRoundStats } from './components/EndOfRoundAssistant';
 import {
   Hero,
@@ -31,7 +28,6 @@ import {
   PlayerStats
 } from './types';
 import { getAllExpansions, filterHeroesByExpansions } from './data/heroes';
-import { GlobalStatsService } from './services/supabase/GlobalStatsService';
 import type { MatchesView } from './components/matches/MatchesMenu';
 
 // Lazy-loaded: Tier 1 (secondary screens)
@@ -39,7 +35,6 @@ const DraftingSystem = lazy(() => import('./components/DraftingSystem'));
 const CoinToss = lazy(() => import('./components/CoinToss'));
 const DraftModeSelection = lazy(() => import('./components/DraftModeSelection'));
 const VictoryScreen = lazy(() => import('./components/VictoryScreen'));
-const CloudSidebar = lazy(() => import('./components/cloud/CloudSidebar'));
 
 // Lazy-loaded: Tier 2 (per-view match statistics)
 const MatchesMenu = lazy(() => import('./components/matches/MatchesMenu'));
@@ -429,9 +424,6 @@ function AppContent() {
   // Access sound functions
   const { playSound, unlockAudio, isAudioReady } = useSound();
 
-  // Access view mode state
-  const { isViewMode, isLoading: isViewModeLoading, error: viewModeError } = useViewMode();
-
   // Game setup state
   const [gameStarted, setGameStarted] = useState<boolean>(false);
   const [simpleTimerMode, setSimpleTimerMode] = useState<boolean>(false);
@@ -497,15 +489,6 @@ function AppContent() {
   const [currentMatchView, setCurrentMatchView] = useState<MatchesView>('menu');
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [selectedHeroId, setSelectedHeroId] = useState<number | null>(null);
-  const [heroStatsMode, setHeroStatsMode] = useState<'local' | 'global'>('local');
-
-  // Auto-navigate to match statistics in view mode
-  useEffect(() => {
-    if (isViewMode && !showMatchStatistics) {
-      setShowMatchStatistics(true);
-      setCurrentMatchView('menu');
-    }
-  }, [isViewMode, showMatchStatistics]);
 
   // NEW: Save/resume game state
   const [showResumePrompt, setShowResumePrompt] = useState<boolean>(false);
@@ -614,18 +597,6 @@ function AppContent() {
       initializeApp();
     }
   }, [gameStarted, isDraftingMode]);
-
-  // Pre-fetch global match data after initial render is complete
-  useEffect(() => {
-    const prefetch = () => GlobalStatsService.prefetchGlobalMatchData();
-    if ('requestIdleCallback' in window) {
-      const id = requestIdleCallback(prefetch);
-      return () => cancelIdleCallback(id);
-    } else {
-      const id = setTimeout(prefetch, 2000);
-      return () => clearTimeout(id);
-    }
-  }, []);
 
   // Save selected expansions to localStorage when they change
   useEffect(() => {
@@ -1995,17 +1966,11 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
   
   // NEW: Handle match statistics navigation
   const handleMatchStatisticsNavigate = (view: MatchesView) => {
-    // In view mode, only allow access to viewing stats, not editing/creating
-    if (isViewMode && view === 'record-match') {
-      return;
-    }
     setCurrentMatchView(view);
   };
-  
+
   // NEW: Handle back from match statistics
   const handleBackFromMatchStatistics = () => {
-    // Prevent navigation back to setup in view mode
-    if (isViewMode) return;
     setShowMatchStatistics(false);
   };
 
@@ -2014,11 +1979,8 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
       {/* Add AudioInitializer at the top level */}
       <AudioInitializer />
 
-      {/* View Mode Banner - shown when viewing shared data */}
-      <ViewModeBanner />
-
       {!simpleTimerMode && (
-        <header className={`App-header mb-8 ${isViewMode || isViewModeLoading || viewModeError ? 'mt-12' : ''}`}>
+        <header className="App-header mb-8">
           <h1 className="text-3xl font-bold mb-2">Guards of Atlantis II Timer</h1>
         </header>
       )}
@@ -2086,10 +2048,8 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
     {currentMatchView === 'hero-stats' && (
       <HeroStats
         onBack={() => handleMatchStatisticsNavigate('menu')}
-        initialStatsMode={heroStatsMode}
-        onViewHeroDetails={(heroId: number, statsMode?: 'local' | 'global') => {
+        onViewHeroDetails={(heroId: number) => {
           setSelectedHeroId(heroId);
-          setHeroStatsMode(statsMode || 'local');
           handleMatchStatisticsNavigate('detailed-hero-stats');
         }}
       />
@@ -2097,7 +2057,6 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
     {currentMatchView === 'detailed-hero-stats' && selectedHeroId !== null && (
       <DetailedHeroStats
         heroId={selectedHeroId}
-        statsMode={heroStatsMode}
         onBack={() => {
           setSelectedHeroId(null);
           handleMatchStatisticsNavigate('hero-stats');
@@ -2124,7 +2083,7 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
     {currentMatchView === 'match-maker' && (
       <MatchMaker
         onBack={() => handleMatchStatisticsNavigate('menu')}
-        onUseTeams={isViewMode ? undefined : (titanPlayerNames, atlanteanPlayerNames) => {
+        onUseTeams={(titanPlayerNames, atlanteanPlayerNames) => {
           // Clear existing players
           setLocalPlayers([]);
 
@@ -2311,11 +2270,6 @@ const handleSavePlayerStats = (roundStats: { [playerId: number]: PlayerRoundStat
       {/* Sound toggle component */}
       <SoundToggle />
 
-      {/* Cloud Sync Sidebar - hidden in view mode */}
-      <Suspense fallback={null}>
-        {!isViewMode && <CloudSidebar />}
-      </Suspense>
-
     </div>
   );
 }
@@ -2325,11 +2279,7 @@ function App() {
   return (
     <SoundProvider>
       <ConnectionProvider>
-        <AuthProvider>
-          <ViewModeProvider>
-            <AppContent />
-          </ViewModeProvider>
-        </AuthProvider>
+        <AppContent />
       </ConnectionProvider>
     </SoundProvider>
   );
