@@ -106,19 +106,36 @@ export function buildShareUrl(payload: DraftSharePayload): string {
   return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
 }
 
-// Shortens a URL via TinyURL's free, unauthenticated, CORS-enabled endpoint —
-// confirmed (2026-08-25) to send Access-Control-Allow-Origin reflecting the
-// caller's origin, unlike is.gd/v.gd (no CORS headers) and bit.ly (requires
-// an OAuth token, which can't be embedded client-side safely). Returns null
-// on any failure (network error, non-OK response, or a non-URL response
-// body) so the caller can fall back to the un-shortened link.
+// Shortens a URL via free, unauthenticated, CORS-enabled shorteners, tried in
+// order. TinyURL used to work here but (as of 2026-09) pins
+// Access-Control-Allow-Origin to https://tinyurl.com, so browsers block it.
+// Both providers below send Access-Control-Allow-Origin: * (verified
+// 2026-09-29) and are "simple" CORS requests (no preflight). is.gd/v.gd send
+// no CORS headers; bit.ly needs an OAuth token that can't be embedded
+// client-side. Returns null if every provider fails so the caller can fall
+// back to the un-shortened link.
+const SHORTENERS: Array<(longUrl: string) => Promise<Response>> = [
+  longUrl => fetch(`https://da.gd/s?url=${encodeURIComponent(longUrl)}`),
+  longUrl => fetch('https://spoo.me/', {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+    body: new URLSearchParams({ url: longUrl })
+  })
+];
+
 export async function shortenUrl(longUrl: string): Promise<string | null> {
-  try {
-    const res = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`);
-    if (!res.ok) return null;
-    const text = (await res.text()).trim();
-    return text.startsWith('http') ? text : null;
-  } catch {
-    return null;
+  for (const shorten of SHORTENERS) {
+    try {
+      const res = await shorten(longUrl);
+      if (!res.ok) continue;
+      const text = (await res.text()).trim();
+      const short = text.startsWith('{') ? JSON.parse(text).short_url : text;
+      if (typeof short === 'string' && short.startsWith('http')) {
+        return short.replace(/^http:/, 'https:');
+      }
+    } catch {
+      // try the next provider
+    }
   }
+  return null;
 }
