@@ -191,8 +191,8 @@ const GameSetup: React.FC<GameSetupProps> = ({
       coin: coinResult,
       heroes: revealedHeroes
     });
-    // Best-effort shorten via TinyURL; fall back to the full link on any failure
-    // (network error, offline, TinyURL down) so sharing still works either way.
+    // Best-effort shorten (da.gd, then spoo.me); fall back to the full link on any failure
+    // (network error, offline, shorteners down) so sharing still works either way.
     const shortUrl = await shortenUrl(longUrl);
     try {
       await navigator.clipboard.writeText(shortUrl ?? longUrl);
