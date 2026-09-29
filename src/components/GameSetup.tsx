@@ -14,6 +14,8 @@ import { sampleRandomHeroes } from '../services/HeroPool';
 import { GeneratedRoster, RosterPlayer } from '../services/RosterGenerator';
 import type { CoinSide } from './CoinToss';
 import { parseShareFromSearch, buildShareUrl, shortenUrl } from '../services/DraftShareService';
+import { assignRandomHeroes, AssignedRoster } from '../services/HeroAssignment';
+import RandomAssignmentResult from './RandomAssignmentResult';
 
 interface GameSetupProps {
   strategyTime: number;
@@ -159,9 +161,15 @@ const GameSetup: React.FC<GameSetupProps> = ({
   // R1: Draft Heroes is enabled once a Blue/Red roster has been generated.
   const canDraft = generatedRoster !== null;
 
-  // Clear a stale reveal if the roster gets invalidated (e.g. Current Players changed).
+  // REQ-7.1 Part B: All Random's assignment.
+  const [assignedRoster, setAssignedRoster] = useState<AssignedRoster | null>(null);
+
+  // Clear a stale reveal/assignment if the roster gets invalidated (e.g. Current Players changed).
   useEffect(() => {
-    if (!generatedRoster) setRevealedHeroes(null);
+    if (!generatedRoster) {
+      setRevealedHeroes(null);
+      setAssignedRoster(null);
+    }
   }, [generatedRoster]);
 
   const handleSoundToggle = (type: 'tick' | 'warning' | 'complete') => {
@@ -179,6 +187,12 @@ const GameSetup: React.FC<GameSetupProps> = ({
     if (!canDraft) return;
     playSound('buttonClick');
     setRevealedHeroes(sampleRandomHeroes(heroes, 15));
+  };
+
+  const handleAllRandom = () => {
+    if (!canDraft || !generatedRoster) return;
+    playSound('buttonClick');
+    setAssignedRoster(assignRandomHeroes(generatedRoster, heroes));
   };
 
   const handleShareDraft = async () => {
@@ -395,11 +409,38 @@ const GameSetup: React.FC<GameSetupProps> = ({
       </button>
     </EnhancedTooltip>
   </div>
+
+  {/* All Random Button */}
+  <div className="relative">
+    <EnhancedTooltip
+      text="Randomly assign a hero to every player in the generated roster."
+      position="top"
+      disableMobileTooltip={true}
+    >
+      <button
+        className={`px-6 py-3 rounded-lg font-medium text-white ${
+          canDraft
+            ? 'bg-blue-600 hover:bg-blue-500'
+            : 'bg-gray-600 cursor-not-allowed'
+        }`}
+        onClick={handleAllRandom}
+        disabled={!canDraft}
+      >
+        All Random
+      </button>
+    </EnhancedTooltip>
+  </div>
 </div>
 
   {revealedHeroes && (
     <div className="mt-6">
       <HeroPoolReveal heroes={revealedHeroes} />
+    </div>
+  )}
+
+  {assignedRoster && (
+    <div className="mt-6">
+      <RandomAssignmentResult assignment={assignedRoster} />
     </div>
   )}
 

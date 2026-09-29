@@ -28,7 +28,7 @@ export type ParsedShare =
   | { payload: null; error: string };
 
 const COLORS: IndicatorColor[] = ['gray', 'blue', 'red'];
-const MODES: IndicatorMode[] = ['UNO', 'DUO', 'ANY'];
+const MODES: IndicatorMode[] = ['UNO', 'DUO', 'TRI', 'ANY'];
 
 function isValidPlayer(p: any): p is { n: string; c: IndicatorColor; m: IndicatorMode } {
   return !!p && typeof p.n === 'string' && p.n.trim() !== '' &&

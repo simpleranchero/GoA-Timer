@@ -29,7 +29,8 @@ const NEXT_COLOR: Record<IndicatorColor, IndicatorColor> = {
 
 const NEXT_MODE: Record<IndicatorMode, IndicatorMode> = {
   UNO: 'DUO',
-  DUO: 'ANY',
+  DUO: 'TRI',
+  TRI: 'ANY',
   ANY: 'UNO'
 };
 
@@ -122,7 +123,23 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({
     const trimmed = name.trim();
     if (!trimmed || isCurrent(trimmed)) return;
     setCurrentPlayers(prev => [...prev, { name: trimmed, color: 'gray', mode: 'UNO' }]);
-    setRoster(PlayerRosterService.recordPick(trimmed));
+
+    // Persist the pick (and its re-sorted order) for the *next* load, but
+    // don't reorder the Players list under the user's cursor mid-session —
+    // update the picked entry's count in place instead of adopting the
+    // freshly re-sorted array. New players (not yet in `roster`) still need
+    // to be appended from the persisted result.
+    const persisted = PlayerRosterService.recordPick(trimmed);
+    setRoster(prev => {
+      const idx = prev.findIndex(e => e.name.toLowerCase() === trimmed.toLowerCase());
+      if (idx === -1) {
+        const newEntry = persisted.find(e => e.name.toLowerCase() === trimmed.toLowerCase());
+        return newEntry ? [...prev, newEntry] : prev;
+      }
+      const next = [...prev];
+      next[idx] = { ...next[idx], pickCount: next[idx].pickCount + 1 };
+      return next;
+    });
     playSound('buttonClick');
   };
 
@@ -271,7 +288,7 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({
 
       {/* Roster generation */}
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <div className="flex flex-col sm:flex-row flex-wrap items-center justify-center gap-4">
           <button
             onClick={() => handleGenerate(4)}
             className="px-6 py-3 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-500"
@@ -283,6 +300,18 @@ const DraftPlayerRoster: React.FC<DraftPlayerRosterProps> = ({
             className="px-6 py-3 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-500"
           >
             Generate 6-Player Roster
+          </button>
+          <button
+            onClick={() => handleGenerate(8)}
+            className="px-6 py-3 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-500"
+          >
+            Generate 8-Player Roster
+          </button>
+          <button
+            onClick={() => handleGenerate(10)}
+            className="px-6 py-3 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-500"
+          >
+            Generate 10-Player Roster
           </button>
         </div>
 
